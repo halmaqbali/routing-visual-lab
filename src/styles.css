@@ -321,3 +321,14 @@ body.moving-panel, body.moving-panel * { cursor: grabbing !important; user-selec
   position: fixed; z-index: 100; pointer-events: none; padding: 0.35rem 0.7rem; border-radius: 8px; font-weight: 700; font-size: 0.9rem;
   background: var(--accent); color: #fff; box-shadow: 0 6px 18px rgb(0 0 0 / 0.25); white-space: nowrap;
 }
+
+/* Phones: fold the less-used top-bar tools behind a Menu button so the topology is visible sooner */
+.menu-toggle { display: none; }
+@media (max-width: 600px) {
+  .menu-toggle { display: inline-flex; }
+  .topbar .group { display: none; width: 100%; }
+  .topbar .group.open { display: flex; }
+  .topbar { gap: 0.4rem 0.5rem; }
+  .brand { font-size: 1rem; }
+  .topbar > label, .topbar > label select { flex: 1 1 100%; max-width: 100%; }
+}

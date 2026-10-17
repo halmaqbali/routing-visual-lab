@@ -106,6 +106,7 @@ export default function App() {
   const { layout, patch: patchLayout, reset: resetLayout } = useLayoutPrefs();
   const [maxed, setMaxed] = useState<PanelId | null>(null);
   const [presenting, setPresenting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [moving, setMoving] = useState<{ id: PanelId; x: number; y: number; over: number | null } | null>(null);
   const swapPanelsRef = useRef<(a: number, b: number) => void>(() => {});
   const wsEl = useRef<HTMLElement | null>(null);
@@ -693,7 +694,8 @@ export default function App() {
           </select>
         </label>
         <div className="spacer" />
-        <div className="group">
+        <button className="btn menu-toggle" aria-expanded={menuOpen} aria-controls="topbar-tools" onClick={() => setMenuOpen(!menuOpen)}>☰ Menu</button>
+        <div className={`group ${menuOpen ? 'open' : ''}`} id="topbar-tools">
           <button className="btn" aria-pressed={teacher.on} onClick={() => setTeacher({ ...teacher, on: !teacher.on })}>🎓 Teacher</button>
           <button className="btn" aria-pressed={large} onClick={() => setLarge(!large)} title="Enlarge labels and tables for projection">⛶ Projector</button>
           <button className="btn" aria-pressed={reducedMotion} onClick={() => setReducedMotion(!reducedMotion)} title="Turn packet movement on or off">Reduce motion</button>

@@ -48,15 +48,22 @@ export function Timeline({ frames, cursor, onJump, hideFuture, actions, collapse
   frames: Frame[]; cursor: number; onJump: (i: number) => void; hideFuture: boolean; actions?: React.ReactNode; collapsed?: boolean; fill?: boolean;
 }) {
   const ref = useRef<HTMLLIElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    ref.current?.scrollIntoView({ block: 'nearest' });
+    // Scroll only the timeline list, never the page (on phones the page would jump down to the timeline).
+    const item = ref.current;
+    const list = listRef.current;
+    if (!item || !list) return;
+    const top = item.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (top + item.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + item.offsetHeight - list.clientHeight;
   }, [cursor]);
   const from = Math.max(0, cursor - WINDOW);
   const to = hideFuture ? cursor + 1 : Math.min(frames.length, cursor + WINDOW);
   return (
     <section className={`card ${fill ? 'panel' : ''}`} aria-label="Event timeline panel">
       <div className="card-head"><h2>Event timeline</h2><span className="row"><span className="small muted">{frames.length} events</span>{actions}</span></div>
-      {!collapsed && <div className="timeline" tabIndex={0} aria-label="Event timeline">
+      {!collapsed && <div className="timeline" ref={listRef} tabIndex={0} aria-label="Event timeline">
         {from > 0 && <div className="small muted" style={{ padding: '0.3rem' }}>… {from} earlier events</div>}
         <ol>
           {frames.slice(from, to).map((f, k) => {

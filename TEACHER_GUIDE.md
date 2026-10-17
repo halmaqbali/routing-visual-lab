@@ -61,6 +61,7 @@ Each part maps to something on screen:
 ## Arranging the screen for projection
 
 - Drag the dividers to give the topology more room, or maximize a panel with its maximize button (top right of each panel). Click the restore button to return to the previous layout.
+- To rearrange the screen, drag a panel's ✥ handle onto another panel and they swap places. For example, put the timeline on the left and the topology on the right.
 - **⛶ Present** (in the topology toolbar) shows only the network, full screen, with Play / Prev / Next and the current event title. Press **Esc** to leave.
 - Collapse the timeline or the learning panel when you don't need it. **Reset layout** in the top bar restores the default arrangement.
 - The layout is remembered on each computer, and is not stored in exported topology files.

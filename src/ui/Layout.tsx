@@ -13,9 +13,16 @@ export interface LayoutPrefs {
   timelineH: number;
   timelineCollapsed: boolean;
   detailsCollapsed: boolean;
+  /** Which panel sits in each position: [left top, left bottom, right top, right bottom]. */
+  order: PanelId[];
 }
 
-export const DEFAULT_LAYOUT: LayoutPrefs = { sidebar: 440, canvasH: 480, timelineH: 260, timelineCollapsed: false, detailsCollapsed: false };
+export const DEFAULT_ORDER: PanelId[] = ['canvas', 'sim', 'timeline', 'details'];
+export const DEFAULT_LAYOUT: LayoutPrefs = { sidebar: 440, canvasH: 480, timelineH: 260, timelineCollapsed: false, detailsCollapsed: false, order: DEFAULT_ORDER };
+
+export const PANEL_NAMES: Record<PanelId, string> = { canvas: 'Topology', sim: 'Controls & explanation', timeline: 'Event timeline', details: 'Learning activity & inspector' };
+
+const validOrder = (o: unknown): o is PanelId[] => Array.isArray(o) && o.length === 4 && DEFAULT_ORDER.every((id) => o.includes(id));
 
 export const MIN = { sidebar: 300, left: 420, canvasH: 220, simH: 120, timelineH: 110, detailsH: 140 };
 
@@ -33,6 +40,7 @@ function loadLayout(): LayoutPrefs {
       timelineH: num(v.timelineH, DEFAULT_LAYOUT.timelineH),
       timelineCollapsed: v.timelineCollapsed === true,
       detailsCollapsed: v.detailsCollapsed === true,
+      order: validOrder(v.order) ? v.order : DEFAULT_ORDER,
     };
   } catch {
     return DEFAULT_LAYOUT;
@@ -180,22 +188,44 @@ const ICON = {
   maximize: 'M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4',
   restore: 'M6 2v4H2M10 2v4h4M14 10h-4v4M2 10h4v4',
   collapse: 'M4 6l4 4 4-4',
+  move: 'M8 1.5v13M1.5 8h13M8 1.5 6 3.5M8 1.5l2 2M8 14.5l-2-2M8 14.5l2-2M1.5 8l2-2M1.5 8l2 2M14.5 8l-2-2M14.5 8l-2 2',
   expand: 'M6 4l4 4-4 4',
 };
 
 /** Small header-bar buttons shared by every main panel. */
-export function PanelButtons({ id, maxed, onMax, collapsed, onCollapse, extra }: {
+export type MoveDir = 'up' | 'down' | 'left' | 'right';
+
+export function PanelButtons({ id, maxed, onMax, collapsed, onCollapse, extra, onMoveStart, onMoveKey }: {
   id: PanelId;
   maxed: PanelId | null;
   onMax: (id: PanelId | null) => void;
   collapsed?: boolean;
   onCollapse?: () => void;
   extra?: ReactNode;
+  /** Start dragging this panel to another position. */
+  onMoveStart?: (id: PanelId, e: React.PointerEvent) => void;
+  /** Keyboard move: swap with the neighbouring position. */
+  onMoveKey?: (id: PanelId, dir: MoveDir) => void;
 }) {
   const isMax = maxed === id;
+  const keys: Record<string, MoveDir> = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
   return (
     <span className="panel-btns">
       {extra}
+      {onMoveStart && !isMax && (
+        <button
+          className="btn small icon move-grip"
+          title="Move panel: drag onto another panel to swap places (or focus and use the arrow keys)"
+          aria-label={`Move ${PANEL_NAMES[id]} panel. Use the arrow keys to swap it with a neighbouring panel.`}
+          onPointerDown={(e) => { if (e.button === 0) onMoveStart(id, e); }}
+          onKeyDown={(e) => {
+            const d = keys[e.key];
+            if (d && onMoveKey) { e.preventDefault(); e.stopPropagation(); onMoveKey(id, d); }
+          }}
+        >
+          <Icon d={ICON.move} />
+        </button>
+      )}
       {onCollapse && !isMax && (
         <button className="btn small icon" onClick={onCollapse} aria-expanded={!collapsed} title={collapsed ? 'Expand panel' : 'Collapse panel'} aria-label={collapsed ? 'Expand panel' : 'Collapse panel'}>
           <Icon d={collapsed ? ICON.expand : ICON.collapse} />

@@ -12,7 +12,7 @@ import { Inspector } from './Inspector';
 import { Explain } from './Explain';
 import { Controls, Timeline } from './Timeline';
 import { Assumptions, ComparePanel, Legend, ScenarioPanel, SettingsPanel } from './Panels';
-import { clamp, DEFAULT_LAYOUT, MIN, PanelBar, PanelButtons, Splitter, useElementSize, useLayoutPrefs, useMediaQuery, type PanelId } from './Layout';
+import { clamp, DEFAULT_LAYOUT, MIN, PANEL_NAMES, PanelBar, PanelButtons, Splitter, useElementSize, useLayoutPrefs, useMediaQuery, type MoveDir, type PanelId } from './Layout';
 
 type ViewMode = Mode | 'compare';
 /** A ping in progress: pings are sent one at a time, as the timeline reaches each one. */
@@ -106,6 +106,8 @@ export default function App() {
   const { layout, patch: patchLayout, reset: resetLayout } = useLayoutPrefs();
   const [maxed, setMaxed] = useState<PanelId | null>(null);
   const [presenting, setPresenting] = useState(false);
+  const [moving, setMoving] = useState<{ id: PanelId; x: number; y: number; over: number | null } | null>(null);
+  const swapPanelsRef = useRef<(a: number, b: number) => void>(() => {});
   const wsEl = useRef<HTMLElement | null>(null);
   const [wsRef, wsSize] = useElementSize<HTMLElement>();
   const [leftRef, leftSize] = useElementSize<HTMLDivElement>();
@@ -396,6 +398,36 @@ export default function App() {
     return () => document.removeEventListener('fullscreenchange', on);
   }, []);
 
+  // Dragging a panel by its move handle: follow the pointer, highlight the position under it, swap on release.
+  const movingId = moving?.id;
+  useEffect(() => {
+    if (!movingId) return;
+    const slotAt = (x: number, y: number) => {
+      const el = document.elementFromPoint(x, y)?.closest('[data-slot]') as HTMLElement | null;
+      return el ? Number(el.dataset.slot) : null;
+    };
+    const move = (e: PointerEvent) => setMoving((m) => m && { ...m, x: e.clientX, y: e.clientY, over: slotAt(e.clientX, e.clientY) });
+    const up = (e: PointerEvent) => {
+      const over = slotAt(e.clientX, e.clientY);
+      const from = layout.order.indexOf(movingId);
+      setMoving(null);
+      if (over !== null && over !== from) swapPanelsRef.current(from, over);
+    };
+    const cancel = (e: KeyboardEvent | PointerEvent) => { if (!('key' in e) || e.key === 'Escape') setMoving(null); };
+    document.body.classList.add('moving-panel');
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('keydown', cancel);
+    return () => {
+      document.body.classList.remove('moving-panel');
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('keydown', cancel);
+    };
+  }, [movingId, layout.order]);
+
   // ------------------------------------------------------------ keyboard
 
   useEffect(() => {
@@ -434,13 +466,50 @@ export default function App() {
 
   // ------------------------------------------------------------ panel sections (the same elements are placed by every layout)
 
+  // Positions: [left top, left bottom, right top, right bottom]. The top panel of each column has a height
+  // (canvasH = left column, timelineH = right column); the bottom panel takes the rest.
+  const order = layout.order;
+  const visible = (id: PanelId) => !(id === 'timeline' && mode === 'compare');
+  const collapsedOf = (id: PanelId) => (id === 'timeline' ? layout.timelineCollapsed : id === 'details' ? layout.detailsCollapsed && mode !== 'compare' : false);
+  const minTop = (id: PanelId) => (id === 'canvas' ? MIN.canvasH : MIN.timelineH);
   const sidebarMax = Math.max(MIN.sidebar, wsSize.w - MIN.left - 12);
   const sidebarW = clamp(layout.sidebar, MIN.sidebar, wsSize.w ? sidebarMax : layout.sidebar);
-  const canvasMax = Math.max(MIN.canvasH, leftSize.h - MIN.simH - 12);
-  const canvasH = clamp(layout.canvasH, MIN.canvasH, leftSize.h ? canvasMax : layout.canvasH);
-  const timelineMax = Math.max(MIN.timelineH, rightSize.h - MIN.detailsH - 12);
-  const timelineH = clamp(layout.timelineH, MIN.timelineH, rightSize.h ? timelineMax : layout.timelineH);
+  const canvasMax = Math.max(minTop(order[0]), leftSize.h - MIN.simH - 12);
+  const canvasH = clamp(layout.canvasH, minTop(order[0]), leftSize.h ? canvasMax : layout.canvasH);
+  const timelineMax = Math.max(minTop(order[2]), rightSize.h - MIN.detailsH - 12);
+  const timelineH = clamp(layout.timelineH, minTop(order[2]), rightSize.h ? timelineMax : layout.timelineH);
   const setVar = (name: string, v: number) => wsEl.current?.style.setProperty(name, `${v}px`);
+
+  // ------------------------------------------------------------ moving panels (swap positions)
+
+  const swapPanels = (a: number, b: number) => {
+    const o = [...order];
+    [o[a], o[b]] = [o[b], o[a]];
+    patchLayout({ order: o });
+    flash(`Moved the ${PANEL_NAMES[o[b]]} panel; it swapped places with ${PANEL_NAMES[o[a]]}.`);
+  };
+  const startMove = (id: PanelId, e: React.PointerEvent) => {
+    e.preventDefault();
+    setMoving({ id, x: e.clientX, y: e.clientY, over: null });
+  };
+  const moveKey = (id: PanelId, dir: MoveDir) => {
+    const i = order.indexOf(id);
+    let j = -1;
+    if (wide) {
+      if (dir === 'up' && i % 2 === 1) j = i - 1;
+      if (dir === 'down' && i % 2 === 0) j = i + 1;
+      if (dir === 'left' && i >= 2) j = i - 2;
+      if (dir === 'right' && i < 2) j = i + 2;
+    } else {
+      if (dir === 'up' && i > 0) j = i - 1;
+      if (dir === 'down' && i < 3) j = i + 1;
+    }
+    if (j < 0) return;
+    swapPanels(i, j);
+    requestAnimationFrame(() => (document.querySelector(`.move-grip[aria-label^="Move ${PANEL_NAMES[id]}"]`) as HTMLElement | null)?.focus());
+  };
+  const mv = { onMoveStart: startMove, onMoveKey: moveKey };
+  swapPanelsRef.current = swapPanels;
 
   const controls = (
     <Controls
@@ -465,7 +534,7 @@ export default function App() {
         <label className="small"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Follow events</label>
         <span className="hint">{tool === 'router' || tool === 'pc' ? 'Click empty space to place it.' : tool === 'link' ? (pendingLink ? 'Click the second device.' : 'Click the first device.') : tool === 'delete' ? 'Click a device or link to delete it.' : 'Click to inspect · drag to move'}</span>
         {!presenting && (
-          <PanelButtons id="canvas" maxed={maxed} onMax={setMaxed}
+          <PanelButtons id="canvas" maxed={maxed} onMax={setMaxed} {...mv}
             extra={<button className="btn small" onClick={startPresenting} title="Full-screen topology for classroom presentation">⛶ Present</button>} />
         )}
       </div>
@@ -483,7 +552,7 @@ export default function App() {
   const simSection = (
     <section className="panel plain" aria-label={mode === 'compare' ? 'Comparison' : 'Simulation controls and explanation'}>
       <PanelBar title={mode === 'compare' ? 'Comparison' : 'Controls & explanation'}>
-        <PanelButtons id="sim" maxed={maxed} onMax={setMaxed} />
+        <PanelButtons id="sim" maxed={maxed} onMax={setMaxed} {...mv} />
       </PanelBar>
       <div className="panel-body">
         {mode === 'compare' ? (
@@ -528,7 +597,7 @@ export default function App() {
     <Timeline
       frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); if (run) finishPing(run, i); else setCursor(i); }} hideFuture={oneAtATime}
       fill={wide || maxed === 'timeline'} collapsed={layout.timelineCollapsed && maxed !== 'timeline'}
-      actions={<PanelButtons id="timeline" maxed={maxed} onMax={setMaxed} collapsed={layout.timelineCollapsed} onCollapse={() => patchLayout({ timelineCollapsed: !layout.timelineCollapsed })} />}
+      actions={<PanelButtons id="timeline" maxed={maxed} onMax={setMaxed} {...mv} collapsed={layout.timelineCollapsed} onCollapse={() => patchLayout({ timelineCollapsed: !layout.timelineCollapsed })} />}
     />
   );
 
@@ -536,7 +605,7 @@ export default function App() {
   const detailsSection = (
     <section className="panel plain" aria-label="Learning activity and inspector">
       <PanelBar title={mode === 'compare' ? 'About the comparison' : scenario ? 'Learning activity & inspector' : 'Settings & inspector'}>
-        <PanelButtons id="details" maxed={maxed} onMax={setMaxed} collapsed={detailsCollapsed} onCollapse={mode === 'compare' ? undefined : () => patchLayout({ detailsCollapsed: !layout.detailsCollapsed })} />
+        <PanelButtons id="details" maxed={maxed} onMax={setMaxed} {...mv} collapsed={detailsCollapsed} onCollapse={mode === 'compare' ? undefined : () => patchLayout({ detailsCollapsed: !layout.detailsCollapsed })} />
       </PanelBar>
       {!detailsCollapsed && (
         <div className="panel-body">
@@ -563,6 +632,37 @@ export default function App() {
   );
 
   const sectionFor = (id: PanelId) => (id === 'canvas' ? canvasSection : id === 'sim' ? simSection : id === 'timeline' && mode !== 'compare' ? timelineSection : detailsSection);
+
+  const slotClass = (i: number, id: PanelId) =>
+    `slot ${moving && moving.over === i && moving.id !== id ? 'drop-target' : ''} ${moving?.id === id ? 'drag-source' : ''}`;
+
+  const renderColumn = (side: 'left' | 'right') => {
+    const [ti, bi] = side === 'left' ? [0, 1] : [2, 3];
+    const t = order[ti];
+    const b = order[bi];
+    const tv = visible(t);
+    const bv = visible(b);
+    const tc = collapsedOf(t);
+    const bc = collapsedOf(b);
+    const h = side === 'left' ? canvasH : timelineH;
+    const max = side === 'left' ? canvasMax : timelineMax;
+    const cssVar = side === 'left' ? '--canvas-h' : '--timeline-h';
+    const key = side === 'left' ? 'canvasH' : 'timelineH';
+    return (
+      <div className="wcol" ref={side === 'left' ? leftRef : rightRef}>
+        {tv && (
+          <div data-slot={ti} className={`${slotClass(ti, t)} ${tc ? 'slot-auto' : !bv || bc ? 'slot-fill' : side === 'left' ? 'slot-sized-l' : 'slot-sized-r'}`}>{sectionFor(t)}</div>
+        )}
+        {tv && bv && !tc && !bc && (
+          <Splitter
+            orientation="horizontal" label={`Divider between ${PANEL_NAMES[t]} and ${PANEL_NAMES[b]}`} value={h} min={minTop(t)} max={max}
+            onLive={(v) => setVar(cssVar, v)} onCommit={(v) => patchLayout({ [key]: v })} onReset={() => patchLayout({ [key]: DEFAULT_LAYOUT[key] })}
+          />
+        )}
+        {bv && <div data-slot={bi} className={`${slotClass(bi, b)} ${bc ? 'slot-auto' : 'slot-fill'}`}>{sectionFor(b)}</div>}
+      </div>
+    );
+  };
 
   const switchMode = (m: ViewMode) => {
     setMode(m);
@@ -660,38 +760,23 @@ export default function App() {
           ref={setWorkspace}
           style={{ '--sidebar': `${sidebarW}px`, '--canvas-h': `${canvasH}px`, '--timeline-h': `${timelineH}px` } as React.CSSProperties}
         >
-          <div className="wcol" ref={leftRef}>
-            <div className="slot slot-canvas">{canvasSection}</div>
-            <Splitter
-              orientation="horizontal" label="Divider between topology and simulation controls" value={canvasH} min={MIN.canvasH} max={canvasMax}
-              onLive={(v) => setVar('--canvas-h', v)} onCommit={(v) => patchLayout({ canvasH: v })} onReset={() => patchLayout({ canvasH: DEFAULT_LAYOUT.canvasH })}
-            />
-            <div className="slot slot-fill">{simSection}</div>
-          </div>
+          {renderColumn('left')}
           <Splitter
-            orientation="vertical" invert label="Divider between topology and sidebar" value={sidebarW} min={MIN.sidebar} max={sidebarMax}
+            orientation="vertical" invert label="Divider between the left and right columns" value={sidebarW} min={MIN.sidebar} max={sidebarMax}
             onLive={(v) => setVar('--sidebar', v)} onCommit={(v) => patchLayout({ sidebar: v })} onReset={() => patchLayout({ sidebar: DEFAULT_LAYOUT.sidebar })}
           />
-          <div className="wcol" ref={rightRef}>
-            {mode !== 'compare' && (
-              <div className={`slot ${layout.timelineCollapsed ? 'slot-auto' : layout.detailsCollapsed ? 'slot-fill' : 'slot-timeline'}`}>{timelineSection}</div>
-            )}
-            {mode !== 'compare' && !layout.timelineCollapsed && !layout.detailsCollapsed && (
-              <Splitter
-                orientation="horizontal" label="Divider between event timeline and learning activity" value={timelineH} min={MIN.timelineH} max={timelineMax}
-                onLive={(v) => setVar('--timeline-h', v)} onCommit={(v) => patchLayout({ timelineH: v })} onReset={() => patchLayout({ timelineH: DEFAULT_LAYOUT.timelineH })}
-              />
-            )}
-            <div className={`slot ${layout.detailsCollapsed && mode !== 'compare' ? 'slot-auto' : 'slot-fill'}`}>{detailsSection}</div>
-          </div>
+          {renderColumn('right')}
         </main>
       ) : (
         <main className="stacked">
-          {canvasSection}
-          {simSection}
-          {mode !== 'compare' && timelineSection}
-          {detailsSection}
+          {order.map((id, i) => visible(id) && <div key={id} data-slot={i} className={slotClass(i, id)}>{sectionFor(id)}</div>)}
         </main>
+      )}
+      {moving && (
+        <div className="move-ghost" style={{ left: moving.x + 14, top: moving.y + 14 }} aria-hidden>
+          Move {PANEL_NAMES[moving.id]}
+          {moving.over !== null && order[moving.over] !== moving.id ? ` → swap with ${PANEL_NAMES[order[moving.over]]}` : ''}
+        </div>
       )}
       {showAssumptions && <Assumptions onClose={() => setShowAssumptions(false)} />}
     </div>

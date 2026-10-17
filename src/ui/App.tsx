@@ -461,8 +461,7 @@ export default function App() {
                   <span className="small muted">Uses the routing tables at the current event.</span>
                 </div>
               </section>
-              <div className="bottom">
-                <Timeline frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); setCursor(i); }} hideFuture={oneAtATime} />
+              <div>
                 <Explain frame={frame} index={cursor} total={frames.length} level={level} gated={gated} hideValues={teacher.on && teacher.hideValues} onUngate={() => setUngated(true)} />
               </div>
             </>
@@ -471,6 +470,9 @@ export default function App() {
         </div>
 
         <aside className="col" aria-label="Details">
+          {mode !== 'compare' && (
+            <Timeline frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); setCursor(i); }} hideFuture={oneAtATime} />
+          )}
           {scenario && (
             <ScenarioPanel sc={scenario} ctx={ctx} predicted={predicted} onPredict={setPredicted} onReset={() => loadScenario(scenario)} onQuick={quickAction} teacher={teacher.on && teacher.gate} />
           )}

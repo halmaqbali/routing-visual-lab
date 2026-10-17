@@ -239,6 +239,7 @@ export function Assumptions({ onClose }: { onClose: () => void }) {
           <li>Links are point-to-point and symmetric (same cost in both directions). A disabled link takes both interfaces down; both routers notice immediately.</li>
           <li>Time is measured in abstract time units. Every protocol message takes 1 time unit to cross a link.</li>
           <li>Ping uses a teaching default TTL of 16. Routers decrease TTL by 1 before forwarding and drop the packet when it reaches 0 (ICMP Time Exceeded is not sent back).</li>
+          <li>Ping count: 1, 3 (default) or continuous until Stop. Pings are sent one after another, not on a real 1-second timer. If routing events are still pending, exactly one routing event happens between two pings, so a continuous ping shows the network converging.</li>
           <li>Equal-cost paths: one route is kept (no load sharing). Ties are broken by name order.</li>
           <li>Each mode uses its own routes only: static routes are ignored in distance-vector and link-state modes (no redistribution).</li>
         </ul>

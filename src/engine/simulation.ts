@@ -120,20 +120,19 @@ export function applyStaticConfigChange(frames: Frame[], cursor: number, newTopo
   return [...kept, frame(s, { kind: 'config-change', category: 'config', title: description, explain: `${description}. ${changes.length ? `${changes.length} routing table entr${changes.length > 1 ? 'ies' : 'y'} changed.` : 'No routing table changed (check the route status for the reason).'}`, changes })];
 }
 
-/** Insert a ping trace after `cursor`. Data packets never change routing state. */
-export function insertPing(frames: Frame[], cursor: number, srcId: string, dstId: string): { frames: Frame[]; result: PingResult; start: number } {
-  const at = frames[cursor].state;
+/** Frames for one ping (request + reply) using the routing tables in `at`. Data packets never change routing state. */
+export function buildPingFrames(at: SimState, srcId: string, dstId: string, label = 'Ping'): { frames: Frame[]; result: PingResult } {
   const result = simulatePing(at.topo, at.tables, srcId, dstId, at.options.ttl);
   const t = at.topo;
-  const pingFrames: Frame[] = [];
-  pingFrames.push(frame(at, {
-    kind: 'ping-start', category: 'data', title: `Ping ${deviceName(t, srcId)} → ${deviceName(t, dstId)}`,
+  const out: Frame[] = [];
+  out.push(frame(at, {
+    kind: 'ping-start', category: 'data', title: `${label}: ${deviceName(t, srcId)} → ${deviceName(t, dstId)}`,
     explain: `${deviceName(t, srcId)} pings ${deviceName(t, dstId)}. A successful ping needs TWO journeys: the echo request there AND the echo reply back. Each router uses only its own routing table, as it is right now.`,
   }));
   for (const st of result.steps) {
     const who = deviceName(t, st.at);
     const ph = st.phase === 'request' ? 'Echo request' : 'Echo reply';
-    pingFrames.push(frame(at, {
+    out.push(frame(at, {
       kind: 'ping-hop', category: 'data',
       title: `${ph} at ${who}: ${st.action === 'drop' ? 'DROPPED' : st.action}`,
       explain: st.message,
@@ -142,14 +141,42 @@ export function insertPing(frames: Frame[], cursor: number, srcId: string, dstId
       anim: st.toDevice && st.linkId ? { from: st.at, to: st.toDevice, linkId: st.linkId, style: 'data', label: st.phase === 'request' ? 'REQ' : 'REP', ttl: st.ttlOut } : st.action === 'drop' ? { from: st.at, to: st.at, linkId: '', style: 'data', drop: true, label: 'X', ttl: st.ttlOut } : undefined,
     }));
   }
-  pingFrames.push(frame(at, {
+  out.push(frame(at, {
     kind: 'ping-result', category: 'data',
-    title: result.success ? 'Ping successful' : 'Ping failed',
+    title: `${label}: ${result.success ? 'reply received' : 'failed'}`,
     explain: result.success
       ? `Success: the echo request reached ${deviceName(t, dstId)} and the echo reply came back to ${deviceName(t, srcId)}. Request path: ${result.requestPath.map((d) => deviceName(t, d)).join(' → ')}. Reply path: ${result.replyPath.map((d) => deviceName(t, d)).join(' → ')}.`
       : `Failed during the echo ${result.failure?.phase} at ${deviceName(t, result.failure?.at ?? '')}: ${result.failure?.message}`,
   }));
-  return { frames: [...frames.slice(0, cursor + 1), ...pingFrames, ...frames.slice(cursor + 1)], result, start: cursor + 1 };
+  return { frames: out, result };
+}
+
+/** Summary like the last lines of the ping command. */
+export function pingStatsFrame(at: SimState, srcId: string, dstId: string, sent: number, received: number): Frame {
+  const lost = sent - received;
+  const pct = sent ? Math.round((lost / sent) * 100) : 0;
+  const t = at.topo;
+  const verdict =
+    received === sent
+      ? 'Every echo request got a reply.'
+      : received === 0
+        ? 'No replies came back. Step back through the pings to find where each one was dropped.'
+        : 'Some pings failed and some succeeded — the routing tables changed between them (for example while the protocol was converging).';
+  return frame(at, {
+    kind: 'ping-stats', category: 'data',
+    title: `Ping statistics: ${sent} sent, ${received} received, ${pct}% loss`,
+    explain: `Ping ${deviceName(t, srcId)} → ${deviceName(t, dstId)} finished, like the summary at the end of the ping command: ${sent} echo request${sent === 1 ? '' : 's'} sent, ${received} repl${received === 1 ? 'y' : 'ies'} received, ${lost} lost (${pct}% packet loss). ${verdict}`,
+  });
+}
+
+export function insertFrames(frames: Frame[], after: number, extra: Frame[]): Frame[] {
+  return [...frames.slice(0, after + 1), ...extra, ...frames.slice(after + 1)];
+}
+
+/** Insert one ping trace after `cursor`. */
+export function insertPing(frames: Frame[], cursor: number, srcId: string, dstId: string): { frames: Frame[]; result: PingResult; start: number } {
+  const { frames: pf, result } = buildPingFrames(frames[cursor].state, srcId, dstId);
+  return { frames: insertFrames(frames, cursor, pf), result, start: cursor + 1 };
 }
 
 /** Run a mode to completion and return the final state (used by comparison and tests). */

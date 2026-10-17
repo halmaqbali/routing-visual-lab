@@ -8,6 +8,8 @@ interface ControlsProps {
   playing: boolean;
   speed: number;
   playDisabled: boolean;
+  canAdvance: boolean;
+  endDisabled: boolean;
   onPlay: () => void;
   onPause: () => void;
   onPrev: () => void;
@@ -23,11 +25,11 @@ export function Controls(p: ControlsProps) {
       {p.playing ? (
         <button className="btn primary" onClick={p.onPause} aria-label="Pause (Space)">❚❚ Pause</button>
       ) : (
-        <button className="btn primary" onClick={p.onPlay} disabled={p.playDisabled || p.cursor >= p.total - 1} aria-label="Play (Space)" title={p.playDisabled ? 'Teacher Mode: reveal one event at a time' : 'Play (Space)'}>▶ Play</button>
+        <button className="btn primary" onClick={p.onPlay} disabled={p.playDisabled || !p.canAdvance} aria-label="Play (Space)" title={p.playDisabled ? 'Teacher Mode: reveal one event at a time' : 'Play (Space)'}>▶ Play</button>
       )}
       <button className="btn" onClick={p.onPrev} disabled={p.cursor <= 0} aria-label="Previous event (Left arrow)" title="Previous event (←)">⏮ Prev</button>
-      <button className="btn" onClick={p.onNext} disabled={p.cursor >= p.total - 1} aria-label="Next event (Right arrow)" title="Next event (→)">Next ⏭</button>
-      <button className="btn" onClick={p.onEnd} disabled={p.cursor >= p.total - 1 || p.playDisabled} title="Jump to the last event (End)">⏩ End</button>
+      <button className="btn" onClick={p.onNext} disabled={!p.canAdvance} aria-label="Next event (Right arrow)" title="Next event (→)">Next ⏭</button>
+      <button className="btn" onClick={p.onEnd} disabled={p.cursor >= p.total - 1 || p.playDisabled || p.endDisabled} title="Jump to the last event (End)">⏩ End</button>
       <button className="btn" onClick={p.onReset} title="Restart the simulation from the current configuration (Home)">↺ Reset</button>
       <label className="small">
         Speed

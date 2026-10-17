@@ -3,7 +3,7 @@ import { DEFAULT_OPTIONS, type Level, type Link, type Mode, type SimOptions, typ
 import { fiveRouter, threeRouter, triangle } from '../model/samples';
 import { addDevice, addLink, deviceName, getDevice, pcs, removeDevice, removeLink } from '../model/topology';
 import { validateTopology } from '../model/validate';
-import { applyLinkChange, applyStaticConfigChange, createTimeline, insertPing } from '../engine/simulation';
+import { applyLinkChange, applyStaticConfigChange, buildPingFrames, createTimeline, insertFrames, pingStatsFrame } from '../engine/simulation';
 import { lookup, routeKey } from '../engine/rib';
 import type { Frame, SimState } from '../engine/types';
 import { SCENARIOS, type Scenario } from '../scenarios';
@@ -14,6 +14,8 @@ import { Controls, Timeline } from './Timeline';
 import { Assumptions, ComparePanel, Legend, ScenarioPanel, SettingsPanel } from './Panels';
 
 type ViewMode = Mode | 'compare';
+/** A ping in progress: pings are sent one at a time, as the timeline reaches each one. */
+interface PingRun { src: string; dst: string; total: number; sent: number; received: number; endIndex: number; waitAt: number | null }
 interface Teacher { on: boolean; gate: boolean; oneAtATime: boolean; hideValues: boolean }
 interface Saved { format: 'routing-visual-lab'; version: 1; topo: Topology; mode: ViewMode; options: SimOptions; level: Level; scenario?: string | null }
 
@@ -94,6 +96,9 @@ export default function App() {
   const [reducedMotion, setReducedMotion] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches);
   const [pingSrc, setPingSrc] = useState('pc1');
   const [pingDst, setPingDst] = useState('pc2');
+  const [pingCount, setPingCount] = useState(3); // 0 = continuous until Stop
+  const [run, setRun] = useState<PingRun | null>(null);
+  const [lastStats, setLastStats] = useState<{ sent: number; received: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const frame = frames[Math.min(cursor, frames.length - 1)];
@@ -125,13 +130,13 @@ export default function App() {
   // Playback
   useEffect(() => {
     if (!playing) return;
-    if (cursor >= frames.length - 1) {
+    if (cursor >= frames.length - 1 && !run) {
       setPlaying(false);
       return;
     }
-    const id = setTimeout(() => setCursor((c) => Math.min(c + 1, frames.length - 1)), interval);
+    const id = setTimeout(() => advanceRef.current(), interval);
     return () => clearTimeout(id);
-  }, [playing, cursor, frames.length, interval]);
+  }, [playing, cursor, frames.length, interval, run]);
 
   // Follow the current event: select the router where the packet / calculation is.
   useEffect(() => {
@@ -149,6 +154,7 @@ export default function App() {
     // Static routing has no protocol to watch: open on the installed routes. Dynamic modes start at time 0.
     setCursor(simModeOf(m) === 'static' ? f.length - 1 : 0);
     setPlaying(false);
+    setRun(null);
     if (note) flash(note, 'warn');
   }, []);
 
@@ -179,6 +185,7 @@ export default function App() {
     let at = cursor;
     if (at === 0 && mode !== 'static') at = frames.length - 1;
     const nf = applyLinkChange(frames, at, t, [linkId], desc);
+    setRun(null);
     setFrames(nf);
     setCursor(at + 1);
     setPlaying(false);
@@ -189,6 +196,7 @@ export default function App() {
     setTopo(t);
     if (mode !== 'static') return rebuild(t, mode, options);
     const nf = applyStaticConfigChange(frames, cursor, t, desc);
+    setRun(null);
     setFrames(nf);
     setCursor(cursor + 1);
     setPlaying(false);
@@ -306,13 +314,60 @@ export default function App() {
     }
   };
 
+  const pingLabel = (n: number, total: number) => (total === Infinity ? `Ping ${n}` : total === 1 ? 'Ping' : `Ping ${n} of ${total}`);
+
+  /** Insert the next ping of the run right after frame `at`, using the routing tables at that moment. */
+  const sendNextPing = (r: PingRun, at: number, base: Frame[] = frames) => {
+    const { frames: pf, result } = buildPingFrames(base[at].state, r.src, r.dst, pingLabel(r.sent + 1, r.total));
+    const next: PingRun = { ...r, sent: r.sent + 1, received: r.received + (result.success ? 1 : 0), endIndex: at + pf.length, waitAt: null };
+    setFrames(insertFrames(base, at, pf));
+    setRun(next);
+    setLastStats({ sent: next.sent, received: next.received });
+    setCursor(at + 1);
+  };
+
   const runPing = () => {
     if (!pingSrc || !pingDst || pingSrc === pingDst) return flash('Choose two different PCs.', 'err');
-    const r = insertPing(frames, cursor, pingSrc, pingDst);
-    setFrames(r.frames);
-    setCursor(r.start);
+    const r: PingRun = { src: pingSrc, dst: pingDst, total: pingCount === 0 ? Infinity : pingCount, sent: 0, received: 0, endIndex: cursor, waitAt: null };
+    sendNextPing(r, cursor);
     setPlaying(!oneAtATime);
   };
+
+  /** End the run (Stop, or after the last ping) with a statistics event after the last ping. */
+  const finishPing = (r: PingRun, target?: number) => {
+    const stats = pingStatsFrame(frames[r.endIndex].state, r.src, r.dst, r.sent, r.received);
+    setFrames(insertFrames(frames, r.endIndex, [stats]));
+    setRun(null);
+    // Without a target, show the statistics. Otherwise keep the requested event (shifted past the inserted one).
+    setCursor(target === undefined ? r.endIndex + 1 : target > r.endIndex ? target + 1 : target);
+  };
+
+  /**
+   * Next event. While a ping run is active, the next ping is sent when the previous one has finished.
+   * If routing events are still pending, one routing event happens between pings, so later pings
+   * can see routing tables change (for example during convergence or count to infinity).
+   */
+  const advance = () => {
+    if (run) {
+      if (cursor === run.endIndex && run.waitAt === null) {
+        if (run.sent >= run.total) return finishPing(run);
+        const nxt = frames[cursor + 1];
+        if (nxt && nxt.ev.category !== 'data') {
+          setRun({ ...run, waitAt: cursor + 1 });
+          setCursor(cursor + 1);
+          return;
+        }
+        return sendNextPing(run, cursor);
+      }
+      if (run.waitAt !== null && cursor === run.waitAt) return sendNextPing(run, cursor);
+    }
+    if (cursor < frames.length - 1) setCursor(cursor + 1);
+    else setPlaying(false);
+  };
+  const advanceRef = useRef(advance);
+  advanceRef.current = advance;
+  const runRef = useRef(run);
+  runRef.current = run;
 
   // ------------------------------------------------------------ keyboard
 
@@ -320,11 +375,11 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) || mode === 'compare') return;
-      if (e.key === 'ArrowRight') { setPlaying(false); setCursor((c) => Math.min(c + 1, frames.length - 1)); e.preventDefault(); }
+      if (e.key === 'ArrowRight') { setPlaying(false); advanceRef.current(); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { setPlaying(false); setCursor((c) => Math.max(c - 1, 0)); e.preventDefault(); }
       else if (e.key === ' ' && tag !== 'BUTTON') { if (!oneAtATime) setPlaying((p) => !p); e.preventDefault(); }
       else if (e.key === 'Home') { setPlaying(false); setCursor(0); }
-      else if (e.key === 'End' && !oneAtATime) { setPlaying(false); setCursor(frames.length - 1); }
+      else if (e.key === 'End' && !oneAtATime && !runRef.current) { setPlaying(false); setCursor(frames.length - 1); }
       else if (e.key === 'Escape') { setTool('select'); setPendingLink(null); setShowAssumptions(false); }
     };
     window.addEventListener('keydown', onKey);
@@ -446,9 +501,10 @@ export default function App() {
               <section className="card stack" aria-label="Simulation and ping controls">
                 <Controls
                   cursor={cursor} total={frames.length} playing={playing} speed={speed} playDisabled={oneAtATime}
-                  onPlay={() => { if (cursor >= frames.length - 1) return; setPlaying(true); }} onPause={() => setPlaying(false)}
+                  canAdvance={!!run || cursor < frames.length - 1} endDisabled={!!run}
+                  onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
                   onPrev={() => { setPlaying(false); setCursor(Math.max(0, cursor - 1)); }}
-                  onNext={() => { setPlaying(false); setCursor(Math.min(frames.length - 1, cursor + 1)); }}
+                  onNext={() => { setPlaying(false); advance(); }}
                   onEnd={() => { setPlaying(false); setCursor(frames.length - 1); }}
                   onReset={() => rebuild(topo, mode, options, 'Simulation reset to time 0 using the current configuration.')}
                   onSpeed={setSpeed}
@@ -457,8 +513,24 @@ export default function App() {
                   <strong>Ping:</strong>
                   <label>from <select value={pingSrc} onChange={(e) => setPingSrc(e.target.value)} aria-label="Source PC">{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
                   <label>to <select value={pingDst} onChange={(e) => setPingDst(e.target.value)} aria-label="Destination PC">{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-                  <button className="btn primary" onClick={runPing} disabled={pcList.length < 2}>✉ Run ping (request + reply)</button>
-                  <span className="small muted">Uses the routing tables at the current event.</span>
+                  <label>count <select value={pingCount} onChange={(e) => setPingCount(Number(e.target.value))} aria-label="Number of pings" disabled={!!run}>
+                    <option value={1}>1</option>
+                    <option value={3}>3</option>
+                    <option value={0}>∞ (until Stop)</option>
+                  </select></label>
+                  {run ? (
+                    <button className="btn danger" onClick={() => { setPlaying(false); finishPing(run, cursor); }}>■ Stop ping</button>
+                  ) : (
+                    <button className="btn primary" onClick={runPing} disabled={pcList.length < 2}>✉ Run ping</button>
+                  )}
+                  {lastStats && (
+                    <span className="pill" aria-live="polite">
+                      {run ? (run.total === Infinity ? `Sent ${lastStats.sent}` : `Sent ${lastStats.sent} of ${run.total}`) : `Last run: sent ${lastStats.sent}`} · received {lastStats.received} · lost {lastStats.sent - lastStats.received}
+                    </span>
+                  )}
+                </div>
+                <div className="small muted">
+                  Each ping is one echo request + one echo reply, using the routing tables at that moment. Pings are sent one after another; if routing events are still pending, one happens between pings.
                 </div>
               </section>
               <div>
@@ -471,7 +543,7 @@ export default function App() {
 
         <aside className="col" aria-label="Details">
           {mode !== 'compare' && (
-            <Timeline frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); setCursor(i); }} hideFuture={oneAtATime} />
+            <Timeline frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); if (run) finishPing(run, i); else setCursor(i); }} hideFuture={oneAtATime} />
           )}
           {scenario && (
             <ScenarioPanel sc={scenario} ctx={ctx} predicted={predicted} onPredict={setPredicted} onReset={() => loadScenario(scenario)} onQuick={quickAction} teacher={teacher.on && teacher.gate} />

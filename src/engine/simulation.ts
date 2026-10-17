@@ -139,7 +139,7 @@ export function insertPing(frames: Frame[], cursor: number, srcId: string, dstId
       explain: st.message,
       routers: [st.at],
       ping: st,
-      anim: st.toDevice && st.linkId ? { from: st.at, to: st.toDevice, linkId: st.linkId, style: 'data', label: st.phase === 'request' ? 'REQ' : 'REP' } : st.action === 'drop' ? { from: st.at, to: st.at, linkId: '', style: 'data', drop: true, label: 'X' } : undefined,
+      anim: st.toDevice && st.linkId ? { from: st.at, to: st.toDevice, linkId: st.linkId, style: 'data', label: st.phase === 'request' ? 'REQ' : 'REP', ttl: st.ttlOut } : st.action === 'drop' ? { from: st.at, to: st.at, linkId: '', style: 'data', drop: true, label: 'X', ttl: st.ttlOut } : undefined,
     }));
   }
   pingFrames.push(frame(at, {

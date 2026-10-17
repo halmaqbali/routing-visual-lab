@@ -212,7 +212,7 @@ export function Legend() {
     <section className="card" aria-label="Legend">
       <h2>Legend</h2>
       <div className="legend">
-        <div className="item">{sw(<g><rect x={-15} y={-10} width={30} height={20} rx={3} fill="var(--data)" /><path d="M-15 -10 L0 2 L15 -10" fill="none" stroke="#fff" strokeWidth={1.5} /></g>)} Data packet (ping) — envelope</div>
+        <div className="item">{sw(<g><rect x={-15} y={-10} width={30} height={20} rx={3} fill="var(--data)" /><path d="M-15 -10 L0 2 L15 -10" fill="none" stroke="#fff" strokeWidth={1.5} /></g>)} Data packet (ping) — envelope labelled REQ/REP with its current TTL</div>
         <div className="item">{sw(<g><rect x={-11} y={-11} width={22} height={22} rx={5} fill="var(--dv)" /><text y={4} textAnchor="middle" fontSize={9} fontWeight={800} fill="#fff">DV</text></g>)} Distance-vector update — square "DV"</div>
         <div className="item">{sw(<g><rect x={-9} y={-9} width={18} height={18} transform="rotate(45)" fill="var(--lsa)" /></g>)} Link-state advertisement — diamond</div>
         <div className="item">{sw(<circle r={9} fill="var(--hello)" />)} Hello (neighbour discovery) — circle "H"</div>

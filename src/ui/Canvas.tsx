@@ -117,7 +117,9 @@ export function Canvas(p: Props) {
         <g>
           <rect x={-19} y={-12} width={38} height={24} rx={3} fill={color} stroke="#fff" strokeWidth={1.5} />
           <path d="M-19 -12 L0 2 L19 -12" fill="none" stroke="#fff" strokeWidth={1.5} />
-          <text y={-17} textAnchor="middle" fontSize={11} fontWeight={700} style={{ fill: color }}>{anim.label}</text>
+          <text y={-18} textAnchor="middle" fontSize={13} fontWeight={800} stroke="var(--panel)" strokeWidth={4} paintOrder="stroke" style={{ fill: color }}>
+            {anim.label}{anim.ttl !== undefined ? ` · TTL ${anim.ttl}` : ''}
+          </text>
         </g>
       );
     else if (anim.style === 'dv')
@@ -150,7 +152,9 @@ export function Canvas(p: Props) {
           <g>
             <polygon points="-10,-24 10,-24 24,-10 24,10 10,24 -10,24 -24,10 -24,-10" fill="var(--fail)" stroke="#fff" strokeWidth={2} />
             <path d="M-9 -9 L9 9 M9 -9 L-9 9" stroke="#fff" strokeWidth={4} strokeLinecap="round" />
-            <text y={40} textAnchor="middle" fontSize={13} fontWeight={800} style={{ fill: 'var(--fail)' }}>DROP</text>
+            <text y={-32} textAnchor="middle" fontSize={13} fontWeight={800} stroke="var(--panel)" strokeWidth={4} paintOrder="stroke" style={{ fill: 'var(--fail)' }}>
+              DROP{anim.style === 'data' && anim.ttl !== undefined ? ` · TTL ${anim.ttl}` : ''}
+            </text>
           </g>
         )}
       </g>

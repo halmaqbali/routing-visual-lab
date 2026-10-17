@@ -12,6 +12,8 @@ export interface Anim {
   style: AnimStyle;
   label?: string;
   drop?: boolean;
+  /** TTL carried by a data packet on this hop. */
+  ttl?: number;
 }
 
 // ---------------------------------------------------------------- distance vector

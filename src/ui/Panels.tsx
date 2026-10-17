@@ -1,0 +1,281 @@
+import { useMemo, useState } from 'react';
+import type { Level, Mode, SimOptions, Topology } from '../model/types';
+import { deviceName, getDevice, pcs } from '../model/topology';
+import { compareLoopPrevention, compareModes, destinationOf, MODE_FACTS } from '../engine/compare';
+import type { Scenario, ScenarioCtx } from '../scenarios';
+
+// ---------------------------------------------------------------- scenario card
+
+export function ScenarioPanel({ sc, ctx, predicted, onPredict, onReset, onQuick, teacher }: {
+  sc: Scenario; ctx: ScenarioCtx; predicted: string | null; onPredict: (c: string) => void; onReset: () => void; onQuick: (i: number) => void; teacher: boolean;
+}) {
+  const [open, setOpen] = useState(true);
+  let explanation = '';
+  try {
+    explanation = sc.explain(ctx);
+  } catch {
+    explanation = 'The explanation cannot be computed for the current configuration.';
+  }
+  const revealed = !teacher || predicted !== null;
+  return (
+    <section className="card scenario" aria-label="Guided scenario">
+      <div className="card-head">
+        <h2>Scenario {sc.num}: {sc.title}</h2>
+        <div className="row">
+          <button className="btn small" onClick={onReset} title="Reload this scenario's starting configuration">↺ Reset scenario</button>
+          <button className="btn small" onClick={() => setOpen(!open)} aria-expanded={open}>{open ? 'Hide' : 'Show'}</button>
+        </div>
+      </div>
+      {open && (
+        <>
+          <p><strong>Objective:</strong> {sc.objective}</p>
+          <div className="stack">
+            <strong>Predict: {sc.prediction.question}</strong>
+            <div className="choices" role="group" aria-label="Prediction choices">
+              {sc.prediction.choices.map((c) => (
+                <button key={c} className="btn" aria-pressed={predicted === c} onClick={() => onPredict(c)}>{c}</button>
+              ))}
+            </div>
+            {predicted && <p className="small muted">Your prediction: <strong>{predicted}</strong>. Now test it — the explanation below is computed from what the simulation actually does.</p>}
+          </div>
+          <details open>
+            <summary>Suggested actions</summary>
+            <ol className="small">{sc.actions.map((a) => <li key={a}>{a}</li>)}</ol>
+          </details>
+          {sc.quickActions && (
+            <div className="row" style={{ marginBottom: '0.5rem' }}>
+              {sc.quickActions.map((q, i) => <button key={q.label} className="btn small" onClick={() => onQuick(i)}>{q.label}</button>)}
+            </div>
+          )}
+          <div className={`banner ${revealed ? 'info' : ''}`}>
+            <div>
+              <strong>What the simulation shows now: </strong>
+              {revealed ? explanation : 'Hidden until you make a prediction (Teacher Mode).'}
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- settings
+
+export function SettingsPanel({ mode, options, level, onOptions, topo }: { mode: Mode; options: SimOptions; level: Level; onOptions: (o: SimOptions) => void; topo: Topology }) {
+  const dv = options.dv;
+  const setDv = (patch: Partial<SimOptions['dv']>) => onOptions({ ...options, dv: { ...dv, ...patch } });
+  const [loop, setLoop] = useState(false);
+  return (
+    <section className="card" aria-label="Protocol settings">
+      <div className="card-head"><h2>Protocol settings</h2><span className="small muted">changes restart the simulation</span></div>
+      {mode === 'static' && (
+        <p className="small">
+          Static routing: no protocol messages. Next hops may be adjacent or remote (recursive lookup). When two routes cover the same network, the lower administrative distance (AD) wins.
+        </p>
+      )}
+      {mode === 'dv' && (
+        <div className="stack">
+          <div className="seg" role="group" aria-label="Distance vector profile">
+            <button aria-pressed={dv.profile === 'generic'} onClick={() => setDv({ profile: 'generic' })}>Generic (weighted costs)</button>
+            <button aria-pressed={dv.profile === 'rip'} onClick={() => setDv({ profile: 'rip' })}>RIP profile (hop count)</button>
+          </div>
+          <p className="small muted">
+            {dv.profile === 'rip'
+              ? 'RIP profile: every link = 1 hop; 15 is the largest usable metric; 16 = unreachable (infinity). Periodic updates every 30 s (simulated).'
+              : `Generic: metric = sum of link costs. Infinity = ${dv.genericInfinity}. Connected networks have cost 0.`}
+          </p>
+          <label><input type="checkbox" checked={dv.splitHorizon} onChange={(e) => setDv({ splitHorizon: e.target.checked })} /> Split horizon <span className="muted small">— don't advertise a route back to the neighbour it was learned from</span></label>
+          <label><input type="checkbox" checked={dv.poisonReverse} onChange={(e) => setDv({ poisonReverse: e.target.checked })} /> Poison reverse <span className="muted small">— advertise it back as unreachable (∞) instead</span></label>
+          <label><input type="checkbox" checked={dv.triggeredUpdates} onChange={(e) => setDv({ triggeredUpdates: e.target.checked })} /> Triggered updates <span className="muted small">— send changes immediately</span></label>
+          {dv.profile === 'generic' && level === 'advanced' && (
+            <label>Infinity <input type="number" min={8} max={1000} value={dv.genericInfinity} onChange={(e) => setDv({ genericInfinity: Math.max(8, Number(e.target.value) || 100) })} style={{ width: '6rem' }} /></label>
+          )}
+          <button className="btn small" onClick={() => setLoop(!loop)} aria-expanded={loop}>{loop ? 'Hide' : 'Show'} loop-prevention comparison</button>
+          {loop && <LoopCompare topo={topo} options={options} />}
+        </div>
+      )}
+      {mode === 'ls' && (
+        <p className="small">
+          Simplified OSPF-inspired model: one area, point-to-point links, Hello without timers, flooding with sequence numbers, SPF 5 time units after the last database change. Not a complete OSPF implementation.
+        </p>
+      )}
+      {level === 'advanced' && (
+        <label className="small" style={{ marginTop: '0.4rem' }}>
+          Ping TTL <input type="number" min={2} max={255} value={options.ttl} onChange={(e) => onOptions({ ...options, ttl: Math.min(255, Math.max(2, Number(e.target.value) || 16)) })} style={{ width: '5rem' }} />
+          <span className="muted">teaching default 16 (real hosts use 64 or 128)</span>
+        </label>
+      )}
+    </section>
+  );
+}
+
+function LoopCompare({ topo, options }: { topo: Topology; options: SimOptions }) {
+  const routerLinks = topo.links.filter((l) => getDevice(topo, l.a.dev)?.kind === 'router' && getDevice(topo, l.b.dev)?.kind === 'router');
+  const [link, setLink] = useState(routerLinks[routerLinks.length - 1]?.id ?? '');
+  const pcList = pcs(topo);
+  const [dst, setDst] = useState(pcList[pcList.length - 1]?.id ?? '');
+  const dest = destinationOf(topo, dst);
+  const rows = useMemo(() => (link && dest ? compareLoopPrevention(topo, options, link, dest) : []), [topo, options, link, dest]);
+  const name = (id: string) => deviceName(topo, id);
+  return (
+    <div className="stack small">
+      <div className="row">
+        <label>Fail link <select value={link} onChange={(e) => setLink(e.target.value)}>{routerLinks.map((l) => <option key={l.id} value={l.id}>{name(l.a.dev)}–{name(l.b.dev)}</option>)}</select></label>
+        <label>Watch network of <select value={dst} onChange={(e) => setDst(e.target.value)}>{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+      </div>
+      <p className="muted">Each row runs the same topology to convergence, fails the link, and counts what happens next for {dest}.</p>
+      <div className="tbl-wrap">
+        <table className="tbl">
+          <thead><tr><th>Setting</th><th>Events</th><th>DV updates</th><th>Highest metric</th><th>Events with a 2-router loop</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.label} className={r.loopFrames ? 'unreach' : ''}>
+                <td>{r.label}</td><td>{r.events}{r.limitHit ? ' (limit)' : ''}</td><td>{r.updates}</td><td>{r.maxMetric}</td><td>{r.loopFrames ? `⚠ ${r.loopFrames}` : '0'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted">Results depend on this topology, the timing model and which link fails. Split horizon only prevents loops between TWO routers; larger loops can still count to infinity.</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- comparison
+
+export function ComparePanel({ topo, options }: { topo: Topology; options: SimOptions }) {
+  const pcList = pcs(topo);
+  const [src, setSrc] = useState(pcList[0]?.id ?? '');
+  const [dst, setDst] = useState(pcList[pcList.length - 1]?.id ?? '');
+  const routerLinks = topo.links.filter((l) => getDevice(topo, l.a.dev)?.kind === 'router' && getDevice(topo, l.b.dev)?.kind === 'router');
+  const [fail, setFail] = useState<string>(routerLinks.find((l) => deviceName(topo, l.a.dev) === 'R4' && deviceName(topo, l.b.dev) === 'R5')?.id ?? routerLinks[0]?.id ?? '');
+  const res = useMemo(() => (src && dst && src !== dst ? compareModes(topo, options, src, dst, fail || null) : []), [topo, options, src, dst, fail]);
+  const name = (id: string) => deviceName(topo, id);
+  const dest = destinationOf(topo, dst);
+  const routersList = topo.devices.filter((d) => d.kind === 'router');
+  const pingText = (r: (typeof res)[number]['initial']) => (r.ping.success ? `✔ works (${r.ping.requestPath.map(name).join('→')})` : `✕ fails at ${name(r.ping.failure?.at ?? '')} (${r.ping.failure?.code})`);
+  return (
+    <section className="card" aria-label="Comparison of routing methods">
+      <div className="card-head"><h2>Compare all three on the same topology</h2></div>
+      <div className="row">
+        <label>From <select value={src} onChange={(e) => setSrc(e.target.value)}>{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label>To <select value={dst} onChange={(e) => setDst(e.target.value)}>{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label>Then fail link <select value={fail} onChange={(e) => setFail(e.target.value)}><option value="">(no failure)</option>{routerLinks.map((l) => <option key={l.id} value={l.id}>{name(l.a.dev)}–{name(l.b.dev)}</option>)}</select></label>
+      </div>
+      <p className="small muted">Destination network: {dest}. Static mode uses the static routes currently configured on the routers. Counts come from actually running each simulation; they are event counts in this model, not real-world times.</p>
+      <div className="tbl-wrap">
+        <table className="tbl">
+          <thead><tr><th></th>{res.map((r) => <th key={r.mode}>{MODE_FACTS[r.mode].name}</th>)}</tr></thead>
+          <tbody>
+            {(['knows', 'obtain', 'exchanged', 'calc'] as const).map((k) => (
+              <tr key={k}>
+                <th scope="row">{{ knows: 'What each router knows at first', obtain: 'How routes are obtained', exchanged: 'Information exchanged', calc: 'Calculation performed' }[k]}</th>
+                {res.map((r) => <td key={r.mode}>{MODE_FACTS[r.mode][k]}</td>)}
+              </tr>
+            ))}
+            <tr><th scope="row">Events until stable</th>{res.map((r) => <td key={r.mode}>{r.initial.events}</td>)}</tr>
+            <tr><th scope="row">Protocol messages</th>{res.map((r) => <td key={r.mode}>{r.initial.messages}</td>)}</tr>
+            <tr><th scope="row">Routing-table changes</th>{res.map((r) => <td key={r.mode}>{r.initial.tableChanges}</td>)}</tr>
+            {routersList.map((rt) => (
+              <tr key={rt.id}>
+                <th scope="row">{rt.name} → {dest}</th>
+                {res.map((r) => {
+                  const x = r.initial.routes[rt.id];
+                  return <td key={r.mode} className="mono small">{!x ? 'no route' : x.source === 'connected' ? 'connected' : `via ${x.learnedFrom ? name(x.learnedFrom) : x.nextHop}${x.source !== 'static' ? `, cost ${x.metric}` : ''}`}</td>;
+                })}
+              </tr>
+            ))}
+            <tr><th scope="row">Ping {name(src)} → {name(dst)}</th>{res.map((r) => <td key={r.mode}>{pingText(r.initial)}</td>)}</tr>
+            <tr><th scope="row">Response to a failure</th>{res.map((r) => <td key={r.mode}>{MODE_FACTS[r.mode].failure}</td>)}</tr>
+            {fail && (
+              <>
+                <tr><th scope="row">After failure: events</th>{res.map((r) => <td key={r.mode}>{r.afterFailure?.events}{r.afterFailure?.limitHit ? ' (limit)' : ''}</td>)}</tr>
+                <tr><th scope="row">After failure: messages</th>{res.map((r) => <td key={r.mode}>{r.afterFailure?.messages}</td>)}</tr>
+                <tr><th scope="row">After failure: table changes</th>{res.map((r) => <td key={r.mode}>{r.afterFailure?.tableChanges}</td>)}</tr>
+                <tr><th scope="row">After failure: ping</th>{res.map((r) => <td key={r.mode}>{r.afterFailure && pingText(r.afterFailure)}</td>)}</tr>
+                <tr><th scope="row">Manual intervention needed?</th>{res.map((r) => <td key={r.mode}><strong>{r.manual}</strong></td>)}</tr>
+              </>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="small muted">Convergence depends on the topology, protocol settings and this event model (1 time unit per message, 30-unit DV update timer, 5-unit SPF delay). No method is "always faster".</p>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- legend and assumptions
+
+export function Legend() {
+  const sw = (el: JSX.Element) => <svg width="44" height="26" viewBox="-22 -13 44 26" aria-hidden>{el}</svg>;
+  return (
+    <section className="card" aria-label="Legend">
+      <h2>Legend</h2>
+      <div className="legend">
+        <div className="item">{sw(<g><rect x={-15} y={-10} width={30} height={20} rx={3} fill="var(--data)" /><path d="M-15 -10 L0 2 L15 -10" fill="none" stroke="#fff" strokeWidth={1.5} /></g>)} Data packet (ping) — envelope</div>
+        <div className="item">{sw(<g><rect x={-11} y={-11} width={22} height={22} rx={5} fill="var(--dv)" /><text y={4} textAnchor="middle" fontSize={9} fontWeight={800} fill="#fff">DV</text></g>)} Distance-vector update — square "DV"</div>
+        <div className="item">{sw(<g><rect x={-9} y={-9} width={18} height={18} transform="rotate(45)" fill="var(--lsa)" /></g>)} Link-state advertisement — diamond</div>
+        <div className="item">{sw(<circle r={9} fill="var(--hello)" />)} Hello (neighbour discovery) — circle "H"</div>
+        <div className="item">{sw(<g><line x1={-20} y1={0} x2={20} y2={0} stroke="var(--fail)" strokeWidth={3} strokeDasharray="6 4" /><circle r={7} fill="var(--panel)" stroke="var(--fail)" strokeWidth={2} /><path d="M-3 -3 L3 3 M3 -3 L-3 3" stroke="var(--fail)" strokeWidth={2} /></g>)} Failed / disabled link — dashed + ✕ "DOWN"</div>
+        <div className="item">{sw(<line x1={-18} y1={0} x2={14} y2={0} stroke="var(--route)" strokeWidth={7} strokeOpacity={0.55} markerEnd="url(#arrow-route)" />)} Selected route path — thick arrow</div>
+        <div className="item">{sw(<line x1={-18} y1={0} x2={18} y2={0} stroke="var(--route)" strokeWidth={6} strokeOpacity={0.4} strokeDasharray="2 6" strokeLinecap="round" />)} Shortest-path tree (link state) — dotted</div>
+        <div className="item">{sw(<g><polygon points="-6,-12 6,-12 12,-6 12,6 6,12 -6,12 -12,6 -12,-6" fill="var(--fail)" /><path d="M-5 -5 L5 5 M5 -5 L-5 5" stroke="#fff" strokeWidth={2.5} /></g>)} Packet drop — octagon ✕ "DROP"</div>
+        <div className="item">{sw(<circle r={10} fill="none" stroke="var(--focus)" strokeWidth={2.5} strokeDasharray="4 3" />)} Router involved in the current event</div>
+        <div className="item"><span className="badge new">NEW</span><span className="badge chg">CHANGED</span> Row changed in this event</div>
+      </div>
+    </section>
+  );
+}
+
+export function Assumptions({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-back" role="dialog" aria-modal="true" aria-labelledby="assump-title" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="card-head"><h2 id="assump-title">Model assumptions and simplifications</h2><button className="btn" onClick={onClose} autoFocus>Close</button></div>
+        <h3>General</h3>
+        <ul>
+          <li>No real packets are sent. Everything is simulated in your browser and is deterministic: the same configuration always gives the same events.</li>
+          <li>Each PC connects directly to one router interface (no switches). ARP is modelled only as "does a device on this link own that address?".</li>
+          <li>Links are point-to-point and symmetric (same cost in both directions). A disabled link takes both interfaces down; both routers notice immediately.</li>
+          <li>Time is measured in abstract time units. Every protocol message takes 1 time unit to cross a link.</li>
+          <li>Ping uses a teaching default TTL of 16. Routers decrease TTL by 1 before forwarding and drop the packet when it reaches 0 (ICMP Time Exceeded is not sent back).</li>
+          <li>Equal-cost paths: one route is kept (no load sharing). Ties are broken by name order.</li>
+          <li>Each mode uses its own routes only: static routes are ignored in distance-vector and link-state modes (no redistribution).</li>
+        </ul>
+        <h3>Static routing</h3>
+        <ul>
+          <li>Connected routes (AD 0) appear automatically for interfaces with an address on an enabled link.</li>
+          <li>Next hops may be adjacent or remote. Remote next hops are resolved recursively through another route; a route cannot resolve through itself.</li>
+          <li>A static route with only an exit interface sends the packet to the device at the other end of that point-to-point link.</li>
+          <li>The simulator uses Cisco-style administrative distance (static default 1). Huawei commands map AD a → preference 59 + a.</li>
+          <li>A router only withdraws a static route when its OWN next-hop/interface becomes unusable. Remote failures are not detected.</li>
+        </ul>
+        <h3>Distance vector</h3>
+        <ul>
+          <li>Metric convention: connected networks cost 0 at the router that owns them. Candidate cost = link cost to neighbour + neighbour's advertised cost.</li>
+          <li>Generic profile: weighted link costs, configurable infinity (default 100). RIP profile: every link = 1 hop, 16 = unreachable. The two are never mixed.</li>
+          <li>Periodic updates every 30 time units (labelled "30 s" in the RIP profile); all routers send at the same moment, processed in a fixed order.</li>
+          <li>A route from the current next hop is always accepted (even if worse); from another neighbour only if strictly better.</li>
+          <li>Triggered updates send only the changed routes, immediately. When a link comes up, both ends send their full table to the new neighbour (if triggered updates are on).</li>
+          <li>RIP timers for route timeout (180 s), garbage collection (120 s) and hold-down are NOT modelled. Unreachable routes stay in the table marked ∞.</li>
+          <li>Cost changes take effect when the next advertisement arrives.</li>
+          <li>Convergence is declared when a full periodic round changes nothing.</li>
+        </ul>
+        <h3>Link state (OSPF-inspired, simplified)</h3>
+        <ul>
+          <li>This is a teaching model, not OSPF. No areas, DR/BDR, LSA types, ageing, acknowledgements or retransmission.</li>
+          <li>Neighbour discovery: a single Hello exchange on each enabled router–router link (no timers).</li>
+          <li>Each router's LSA lists its router neighbours with link costs and its connected networks. Sequence numbers decide which copy is newer.</li>
+          <li>A received LSA is stored and flooded to all other neighbours only if it is newer; duplicates are discarded.</li>
+          <li>Database synchronisation when a new adjacency forms: each side sends all LSAs it has.</li>
+          <li>SPF runs 5 time units after the router's last database change. Links are used only if both ends report them (two-way check).</li>
+          <li>Route cost to a network = SPF cost to the router that advertises it (networks themselves add 0).</li>
+        </ul>
+        <h3>Comparison</h3>
+        <ul>
+          <li>Event and message counts depend on this topology, these timers and settings. They do not show that one protocol is always faster.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}

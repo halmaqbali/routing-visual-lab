@@ -12,6 +12,7 @@ import { Inspector } from './Inspector';
 import { Explain } from './Explain';
 import { Controls, Timeline } from './Timeline';
 import { Assumptions, ComparePanel, Legend, ScenarioPanel, SettingsPanel } from './Panels';
+import { clamp, DEFAULT_LAYOUT, MIN, PanelBar, PanelButtons, Splitter, useElementSize, useLayoutPrefs, useMediaQuery, type PanelId } from './Layout';
 
 type ViewMode = Mode | 'compare';
 /** A ping in progress: pings are sent one at a time, as the timeline reaches each one. */
@@ -100,6 +101,16 @@ export default function App() {
   const [run, setRun] = useState<PingRun | null>(null);
   const [lastStats, setLastStats] = useState<{ sent: number; received: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Layout (separate from simulation state: resizing never touches frames, topology or selection)
+  const wide = useMediaQuery('(min-width: 900px)');
+  const { layout, patch: patchLayout, reset: resetLayout } = useLayoutPrefs();
+  const [maxed, setMaxed] = useState<PanelId | null>(null);
+  const [presenting, setPresenting] = useState(false);
+  const wsEl = useRef<HTMLElement | null>(null);
+  const [wsRef, wsSize] = useElementSize<HTMLElement>();
+  const [leftRef, leftSize] = useElementSize<HTMLDivElement>();
+  const [rightRef, rightSize] = useElementSize<HTMLDivElement>();
+  const setWorkspace = useCallback((el: HTMLElement | null) => { wsRef(el); wsEl.current = el; }, [wsRef]);
 
   const frame = frames[Math.min(cursor, frames.length - 1)];
   const state = frame.state;
@@ -369,12 +380,29 @@ export default function App() {
   const runRef = useRef(run);
   runRef.current = run;
 
+  // ------------------------------------------------------------ presentation (full-screen topology)
+
+  const startPresenting = () => {
+    setPresenting(true);
+    document.documentElement.requestFullscreen?.().catch(() => { /* full screen not allowed: the in-page view still works */ });
+  };
+  const stopPresenting = () => {
+    setPresenting(false);
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  };
+  useEffect(() => {
+    const on = () => { if (!document.fullscreenElement) setPresenting(false); };
+    document.addEventListener('fullscreenchange', on);
+    return () => document.removeEventListener('fullscreenchange', on);
+  }, []);
+
   // ------------------------------------------------------------ keyboard
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
-      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) || mode === 'compare') return;
+      if (e.key === 'Escape') { setMaxed(null); setPresenting(false); }
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) || (e.target as HTMLElement).getAttribute('role') === 'separator' || mode === 'compare') return;
       if (e.key === 'ArrowRight') { setPlaying(false); advanceRef.current(); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { setPlaying(false); setCursor((c) => Math.max(c - 1, 0)); e.preventDefault(); }
       else if (e.key === ' ' && tag !== 'BUTTON') { if (!oneAtATime) setPlaying((p) => !p); e.preventDefault(); }
@@ -404,14 +432,146 @@ export default function App() {
   const errors = issues.filter((i) => i.severity === 'error');
   const warnings = issues.filter((i) => i.severity === 'warning');
 
+  // ------------------------------------------------------------ panel sections (the same elements are placed by every layout)
+
+  const sidebarMax = Math.max(MIN.sidebar, wsSize.w - MIN.left - 12);
+  const sidebarW = clamp(layout.sidebar, MIN.sidebar, wsSize.w ? sidebarMax : layout.sidebar);
+  const canvasMax = Math.max(MIN.canvasH, leftSize.h - MIN.simH - 12);
+  const canvasH = clamp(layout.canvasH, MIN.canvasH, leftSize.h ? canvasMax : layout.canvasH);
+  const timelineMax = Math.max(MIN.timelineH, rightSize.h - MIN.detailsH - 12);
+  const timelineH = clamp(layout.timelineH, MIN.timelineH, rightSize.h ? timelineMax : layout.timelineH);
+  const setVar = (name: string, v: number) => wsEl.current?.style.setProperty(name, `${v}px`);
+
+  const controls = (
+    <Controls
+      cursor={cursor} total={frames.length} playing={playing} speed={speed} playDisabled={oneAtATime}
+      canAdvance={!!run || cursor < frames.length - 1} endDisabled={!!run}
+      onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
+      onPrev={() => { setPlaying(false); setCursor(Math.max(0, cursor - 1)); }}
+      onNext={() => { setPlaying(false); advance(); }}
+      onEnd={() => { setPlaying(false); setCursor(frames.length - 1); }}
+      onReset={() => rebuild(topo, mode, options, 'Simulation reset to time 0 using the current configuration.')}
+      onSpeed={setSpeed}
+    />
+  );
+
+  const canvasSection = (
+    <section className="card canvas-wrap panel" aria-label="Network canvas">
+      <div className="toolbar" role="toolbar" aria-label="Editing tools">
+        {([['select', '↖ Select / drag'], ['router', '+ Router'], ['pc', '+ PC'], ['link', '⟷ Link'], ['delete', '🗑 Delete']] as const).map(([t, l]) => (
+          <button key={t} className="btn small" aria-pressed={tool === t} onClick={() => { setTool(t); setPendingLink(null); }}>{l}</button>
+        ))}
+        <label className="small"><input type="checkbox" checked={showAddr} onChange={(e) => setShowAddr(e.target.checked)} /> Addresses</label>
+        <label className="small"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Follow events</label>
+        <span className="hint">{tool === 'router' || tool === 'pc' ? 'Click empty space to place it.' : tool === 'link' ? (pendingLink ? 'Click the second device.' : 'Click the first device.') : tool === 'delete' ? 'Click a device or link to delete it.' : 'Click to inspect · drag to move'}</span>
+        {!presenting && (
+          <PanelButtons id="canvas" maxed={maxed} onMax={setMaxed}
+            extra={<button className="btn small" onClick={startPresenting} title="Full-screen topology for classroom presentation">⛶ Present</button>} />
+        )}
+      </div>
+      <div className="canvas-area">
+        <Canvas
+          topo={curTopo} pos={pos} mode={mode} options={options} selected={sel} tool={tool} pendingLinkFrom={pendingLink}
+          anim={mode === 'compare' ? undefined : frame.ev.anim} animKey={cursor} duration={Math.min(1200, interval * 0.75)} reducedMotion={reducedMotion}
+          routePath={routePath} sptPath={sptPath} focus={mode === 'compare' ? [] : frame.ev.routers ?? []} showAddresses={showAddr}
+          onSelect={onSelectLink} onBackground={onBackground} onDevice={onDevice} onMove={(id, x, y) => setPos((p) => ({ ...p, [id]: { x, y } }))}
+        />
+      </div>
+    </section>
+  );
+
+  const simSection = (
+    <section className="panel plain" aria-label={mode === 'compare' ? 'Comparison' : 'Simulation controls and explanation'}>
+      <PanelBar title={mode === 'compare' ? 'Comparison' : 'Controls & explanation'}>
+        <PanelButtons id="sim" maxed={maxed} onMax={setMaxed} />
+      </PanelBar>
+      <div className="panel-body">
+        {mode === 'compare' ? (
+          <ComparePanel topo={applyPositions(topo, pos)} options={options} />
+        ) : (
+          <>
+            <section className="card stack" aria-label="Simulation and ping controls">
+              {controls}
+              <div className="row">
+                <strong>Ping:</strong>
+                <label>from <select value={pingSrc} onChange={(e) => setPingSrc(e.target.value)} aria-label="Source PC">{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+                <label>to <select value={pingDst} onChange={(e) => setPingDst(e.target.value)} aria-label="Destination PC">{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+                <label>count <select value={pingCount} onChange={(e) => setPingCount(Number(e.target.value))} aria-label="Number of pings" disabled={!!run}>
+                  <option value={1}>1</option>
+                  <option value={3}>3</option>
+                  <option value={0}>∞ (until Stop)</option>
+                </select></label>
+                {run ? (
+                  <button className="btn danger" onClick={() => { setPlaying(false); finishPing(run, cursor); }}>■ Stop ping</button>
+                ) : (
+                  <button className="btn primary" onClick={runPing} disabled={pcList.length < 2}>✉ Run ping</button>
+                )}
+                {lastStats && (
+                  <span className="pill" aria-live="polite">
+                    {run ? (run.total === Infinity ? `Sent ${lastStats.sent}` : `Sent ${lastStats.sent} of ${run.total}`) : `Last run: sent ${lastStats.sent}`} · received {lastStats.received} · lost {lastStats.sent - lastStats.received}
+                  </span>
+                )}
+              </div>
+              <div className="small muted">
+                Each ping is one echo request + one echo reply, using the routing tables at that moment. Pings are sent one after another; if routing events are still pending, one happens between pings.
+              </div>
+            </section>
+            <Explain frame={frame} index={cursor} total={frames.length} level={level} gated={gated} hideValues={teacher.on && teacher.hideValues} onUngate={() => setUngated(true)} />
+          </>
+        )}
+        <Legend />
+      </div>
+    </section>
+  );
+
+  const timelineSection = (
+    <Timeline
+      frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); if (run) finishPing(run, i); else setCursor(i); }} hideFuture={oneAtATime}
+      fill={wide || maxed === 'timeline'} collapsed={layout.timelineCollapsed && maxed !== 'timeline'}
+      actions={<PanelButtons id="timeline" maxed={maxed} onMax={setMaxed} collapsed={layout.timelineCollapsed} onCollapse={() => patchLayout({ timelineCollapsed: !layout.timelineCollapsed })} />}
+    />
+  );
+
+  const detailsCollapsed = layout.detailsCollapsed && maxed !== 'details' && mode !== 'compare';
+  const detailsSection = (
+    <section className="panel plain" aria-label="Learning activity and inspector">
+      <PanelBar title={mode === 'compare' ? 'About the comparison' : scenario ? 'Learning activity & inspector' : 'Settings & inspector'}>
+        <PanelButtons id="details" maxed={maxed} onMax={setMaxed} collapsed={detailsCollapsed} onCollapse={mode === 'compare' ? undefined : () => patchLayout({ detailsCollapsed: !layout.detailsCollapsed })} />
+      </PanelBar>
+      {!detailsCollapsed && (
+        <div className="panel-body">
+          {scenario && (scenario.mode === 'compare') === (mode === 'compare') && (
+            <ScenarioPanel sc={scenario} ctx={ctx} predicted={predicted} onPredict={setPredicted} onReset={() => loadScenario(scenario)} onQuick={quickAction} teacher={teacher.on && teacher.gate} />
+          )}
+          {mode !== 'compare' && <SettingsPanel mode={mode} options={options} level={level} topo={state.topo} onOptions={(o) => { setOptions(o); rebuild(topo, mode, o, 'Protocol settings changed: the simulation restarted from time 0.'); }} />}
+          {mode !== 'compare' && (
+            <Inspector
+              state={state} frames={frames} cursor={cursor} level={level} options={options} sel={sel} hideValues={teacher.on && teacher.hideValues}
+              changes={frame.ev.changes ?? []} pingHop={frame.ev.ping} selectedKey={selectedKey} onSelectKey={setSelectedKey}
+              onStructural={structural} onLink={onLink} onStatic={onStatic} onDelete={onDelete}
+            />
+          )}
+          {mode === 'compare' && (
+            <section className="card">
+              <h2>How to read the comparison</h2>
+              <p className="small">Each column is a real simulation of the same topology. Static routing uses whatever static routes are configured (switch to Static mode to edit them). Pick a link to fail and compare how each approach responds, and whether a person has to fix anything.</p>
+            </section>
+          )}
+        </div>
+      )}
+    </section>
+  );
+
+  const sectionFor = (id: PanelId) => (id === 'canvas' ? canvasSection : id === 'sim' ? simSection : id === 'timeline' && mode !== 'compare' ? timelineSection : detailsSection);
+
   const switchMode = (m: ViewMode) => {
     setMode(m);
     rebuild(topo, m, options);
   };
 
   return (
-    <div className="app">
-      <header className="topbar">
+    <div className={`app ${wide && !presenting ? 'app-wide' : ''} ${presenting ? 'app-present' : ''}`}>
+      {!presenting && <header className="topbar">
         <div className="brand">
           <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth="2"><circle cx="5" cy="12" r="3" /><circle cx="19" cy="5" r="3" /><circle cx="19" cy="19" r="3" /><path d="M8 11 16 6M8 13l8 5" /></svg>
           Routing Visual Lab
@@ -437,6 +597,7 @@ export default function App() {
           <button className="btn" aria-pressed={teacher.on} onClick={() => setTeacher({ ...teacher, on: !teacher.on })}>🎓 Teacher</button>
           <button className="btn" aria-pressed={large} onClick={() => setLarge(!large)} title="Enlarge labels and tables for projection">⛶ Projector</button>
           <button className="btn" aria-pressed={reducedMotion} onClick={() => setReducedMotion(!reducedMotion)} title="Turn packet movement on or off">Reduce motion</button>
+          <button className="btn" onClick={() => { resetLayout(); setMaxed(null); }} title="Restore the default panel sizes">▦ Reset layout</button>
           <button className="btn" onClick={() => setShowAssumptions(true)}>ⓘ Model assumptions</button>
           <select aria-label="New topology" value="" onChange={(e) => e.target.value && newTopology(e.target.value)}>
             <option value="">New…</option>
@@ -449,10 +610,10 @@ export default function App() {
           <button className="btn" onClick={() => fileRef.current?.click()} title="Load a topology JSON file">⬆ Load</button>
           <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) load(f); e.target.value = ''; }} />
         </div>
-      </header>
+      </header>}
 
-      {teacher.on && (
-        <div className="card" style={{ margin: '0.75rem 0.75rem 0' }} role="region" aria-label="Teacher controls">
+      {teacher.on && !presenting && (
+        <div className="card teacher-panel" role="region" aria-label="Teacher controls">
           <div className="row">
             <strong>Teacher Mode:</strong>
             <label><input type="checkbox" checked={teacher.gate} onChange={(e) => setTeacher({ ...teacher, gate: e.target.checked })} /> Hide explanations until a prediction is made</label>
@@ -463,8 +624,8 @@ export default function App() {
         </div>
       )}
 
-      <main className="main">
-        <div className="col">
+      {!presenting && (notice || errors.length > 0 || warnings.length > 0) && (
+        <div className="banners">
           {notice && (
             <div className={`banner ${notice.kind}`} role="status">
               <span>{notice.text}</span>
@@ -477,93 +638,61 @@ export default function App() {
               {issues.map((i, k) => <p key={k} className={`issue ${i.severity}`}>{i.message}</p>)}
             </details>
           )}
-          <section className="card canvas-wrap" aria-label="Network canvas">
-            <div className="toolbar" role="toolbar" aria-label="Editing tools">
-              {([['select', '↖ Select / drag'], ['router', '+ Router'], ['pc', '+ PC'], ['link', '⟷ Link'], ['delete', '🗑 Delete']] as const).map(([t, l]) => (
-                <button key={t} className="btn small" aria-pressed={tool === t} onClick={() => { setTool(t); setPendingLink(null); }}>{l}</button>
-              ))}
-              <label className="small"><input type="checkbox" checked={showAddr} onChange={(e) => setShowAddr(e.target.checked)} /> Addresses</label>
-              <label className="small"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Follow events</label>
-              <span className="hint">{tool === 'router' || tool === 'pc' ? 'Click empty space to place it.' : tool === 'link' ? (pendingLink ? 'Click the second device.' : 'Click the first device.') : tool === 'delete' ? 'Click a device or link to delete it.' : 'Click to inspect · drag to move'}</span>
-            </div>
-            <Canvas
-              topo={curTopo} pos={pos} mode={mode} options={options} selected={sel} tool={tool} pendingLinkFrom={pendingLink}
-              anim={mode === 'compare' ? undefined : frame.ev.anim} animKey={cursor} duration={Math.min(1200, interval * 0.75)} reducedMotion={reducedMotion}
-              routePath={routePath} sptPath={sptPath} focus={mode === 'compare' ? [] : frame.ev.routers ?? []} showAddresses={showAddr}
-              onSelect={onSelectLink} onBackground={onBackground} onDevice={onDevice} onMove={(id, x, y) => setPos((p) => ({ ...p, [id]: { x, y } }))}
-            />
-          </section>
-
-          {mode === 'compare' ? (
-            <ComparePanel topo={applyPositions(topo, pos)} options={options} />
-          ) : (
-            <>
-              <section className="card stack" aria-label="Simulation and ping controls">
-                <Controls
-                  cursor={cursor} total={frames.length} playing={playing} speed={speed} playDisabled={oneAtATime}
-                  canAdvance={!!run || cursor < frames.length - 1} endDisabled={!!run}
-                  onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
-                  onPrev={() => { setPlaying(false); setCursor(Math.max(0, cursor - 1)); }}
-                  onNext={() => { setPlaying(false); advance(); }}
-                  onEnd={() => { setPlaying(false); setCursor(frames.length - 1); }}
-                  onReset={() => rebuild(topo, mode, options, 'Simulation reset to time 0 using the current configuration.')}
-                  onSpeed={setSpeed}
-                />
-                <div className="row">
-                  <strong>Ping:</strong>
-                  <label>from <select value={pingSrc} onChange={(e) => setPingSrc(e.target.value)} aria-label="Source PC">{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-                  <label>to <select value={pingDst} onChange={(e) => setPingDst(e.target.value)} aria-label="Destination PC">{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-                  <label>count <select value={pingCount} onChange={(e) => setPingCount(Number(e.target.value))} aria-label="Number of pings" disabled={!!run}>
-                    <option value={1}>1</option>
-                    <option value={3}>3</option>
-                    <option value={0}>∞ (until Stop)</option>
-                  </select></label>
-                  {run ? (
-                    <button className="btn danger" onClick={() => { setPlaying(false); finishPing(run, cursor); }}>■ Stop ping</button>
-                  ) : (
-                    <button className="btn primary" onClick={runPing} disabled={pcList.length < 2}>✉ Run ping</button>
-                  )}
-                  {lastStats && (
-                    <span className="pill" aria-live="polite">
-                      {run ? (run.total === Infinity ? `Sent ${lastStats.sent}` : `Sent ${lastStats.sent} of ${run.total}`) : `Last run: sent ${lastStats.sent}`} · received {lastStats.received} · lost {lastStats.sent - lastStats.received}
-                    </span>
-                  )}
-                </div>
-                <div className="small muted">
-                  Each ping is one echo request + one echo reply, using the routing tables at that moment. Pings are sent one after another; if routing events are still pending, one happens between pings.
-                </div>
-              </section>
-              <div>
-                <Explain frame={frame} index={cursor} total={frames.length} level={level} gated={gated} hideValues={teacher.on && teacher.hideValues} onUngate={() => setUngated(true)} />
-              </div>
-            </>
-          )}
-          <Legend />
         </div>
+      )}
 
-        <aside className="col" aria-label="Details">
-          {mode !== 'compare' && (
-            <Timeline frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); if (run) finishPing(run, i); else setCursor(i); }} hideFuture={oneAtATime} />
-          )}
-          {scenario && (
-            <ScenarioPanel sc={scenario} ctx={ctx} predicted={predicted} onPredict={setPredicted} onReset={() => loadScenario(scenario)} onQuick={quickAction} teacher={teacher.on && teacher.gate} />
-          )}
-          {mode !== 'compare' && <SettingsPanel mode={mode} options={options} level={level} topo={state.topo} onOptions={(o) => { setOptions(o); rebuild(topo, mode, o, 'Protocol settings changed: the simulation restarted from time 0.'); }} />}
-          {mode !== 'compare' && (
-            <Inspector
-              state={state} frames={frames} cursor={cursor} level={level} options={options} sel={sel} hideValues={teacher.on && teacher.hideValues}
-              changes={frame.ev.changes ?? []} pingHop={frame.ev.ping} selectedKey={selectedKey} onSelectKey={setSelectedKey}
-              onStructural={structural} onLink={onLink} onStatic={onStatic} onDelete={onDelete}
+      {presenting ? (
+        <main className="present">
+          {canvasSection}
+          <div className="present-bar card">
+            {mode !== 'compare' && controls}
+            <span className="present-title">{mode !== 'compare' ? frame.ev.title : 'Compare mode'}</span>
+            <button className="btn" onClick={stopPresenting}>✕ Exit full screen (Esc)</button>
+          </div>
+        </main>
+      ) : maxed ? (
+        <main className="workspace single" ref={wsRef}>
+          {sectionFor(maxed)}
+        </main>
+      ) : wide ? (
+        <main
+          className="workspace"
+          ref={setWorkspace}
+          style={{ '--sidebar': `${sidebarW}px`, '--canvas-h': `${canvasH}px`, '--timeline-h': `${timelineH}px` } as React.CSSProperties}
+        >
+          <div className="wcol" ref={leftRef}>
+            <div className="slot slot-canvas">{canvasSection}</div>
+            <Splitter
+              orientation="horizontal" label="Divider between topology and simulation controls" value={canvasH} min={MIN.canvasH} max={canvasMax}
+              onLive={(v) => setVar('--canvas-h', v)} onCommit={(v) => patchLayout({ canvasH: v })} onReset={() => patchLayout({ canvasH: DEFAULT_LAYOUT.canvasH })}
             />
-          )}
-          {mode === 'compare' && (
-            <section className="card">
-              <h2>How to read the comparison</h2>
-              <p className="small">Each column is a real simulation of the same topology. Static routing uses whatever static routes are configured (switch to Static mode to edit them). Pick a link to fail and compare how each approach responds, and whether a person has to fix anything.</p>
-            </section>
-          )}
-        </aside>
-      </main>
+            <div className="slot slot-fill">{simSection}</div>
+          </div>
+          <Splitter
+            orientation="vertical" invert label="Divider between topology and sidebar" value={sidebarW} min={MIN.sidebar} max={sidebarMax}
+            onLive={(v) => setVar('--sidebar', v)} onCommit={(v) => patchLayout({ sidebar: v })} onReset={() => patchLayout({ sidebar: DEFAULT_LAYOUT.sidebar })}
+          />
+          <div className="wcol" ref={rightRef}>
+            {mode !== 'compare' && (
+              <div className={`slot ${layout.timelineCollapsed ? 'slot-auto' : layout.detailsCollapsed ? 'slot-fill' : 'slot-timeline'}`}>{timelineSection}</div>
+            )}
+            {mode !== 'compare' && !layout.timelineCollapsed && !layout.detailsCollapsed && (
+              <Splitter
+                orientation="horizontal" label="Divider between event timeline and learning activity" value={timelineH} min={MIN.timelineH} max={timelineMax}
+                onLive={(v) => setVar('--timeline-h', v)} onCommit={(v) => patchLayout({ timelineH: v })} onReset={() => patchLayout({ timelineH: DEFAULT_LAYOUT.timelineH })}
+              />
+            )}
+            <div className={`slot ${layout.detailsCollapsed && mode !== 'compare' ? 'slot-auto' : 'slot-fill'}`}>{detailsSection}</div>
+          </div>
+        </main>
+      ) : (
+        <main className="stacked">
+          {canvasSection}
+          {simSection}
+          {mode !== 'compare' && timelineSection}
+          {detailsSection}
+        </main>
+      )}
       {showAssumptions && <Assumptions onClose={() => setShowAssumptions(false)} />}
     </div>
   );

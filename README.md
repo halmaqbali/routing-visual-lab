@@ -43,6 +43,7 @@ The production build is a static site (relative paths), so `dist/` can be copied
 - **13 guided scenarios**, each with an objective, a prediction question, suggested actions, quick actions, a reset button, and an explanation computed from the *current* simulation result.
 - **Teacher Mode**: hide explanations until a prediction is made, reveal one event at a time, hide next hops and costs for quiz questions, reset the scenario instantly, and enlarge text for a projector.
 - **Timeline** with real state restoration. Previous Event shows the exact earlier state, because every event stores a full snapshot.
+- **Resizable workspace**: drag the dividers between the topology, the controls, the event timeline and the learning-activity panel. You can also use the arrow keys on a focused divider; double-click a divider (or press Enter) to reset it. Every panel can be maximized and restored. The timeline and learning panels collapse to their header. **Reset layout** restores the defaults, and **⛶ Present** shows the topology full screen with a compact control bar. Panel sizes are saved in the browser, separately from saved topologies. Resizing never restarts the simulation or moves routers: the drawing keeps its coordinate system and aspect ratio.
 - Save and load as JSON, browser autosave, keyboard shortcuts (← → Space Home End Esc), reduced-motion support, dark mode, and layouts for projectors, laptops and tablets.
 
 ## Architecture

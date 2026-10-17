@@ -58,6 +58,13 @@ Each part maps to something on screen:
 - *Scenario 11:* Before each SPF step: "Which node has the lowest tentative cost? What will be confirmed next?"
 - *Scenario 13:* "Which approach needed a person to fix it? Is link state always faster?" (No. Compare event counts and read the note about timing assumptions.)
 
+## Arranging the screen for projection
+
+- Drag the dividers to give the topology more room, or maximize a panel with its maximize button (top right of each panel). Click the restore button to return to the previous layout.
+- **⛶ Present** (in the topology toolbar) shows only the network, full screen, with Play / Prev / Next and the current event title. Press **Esc** to leave.
+- Collapse the timeline or the learning panel when you don't need it. **Reset layout** in the top bar restores the default arrangement.
+- The layout is remembered on each computer, and is not stored in exported topology files.
+
 ## Building your own exercises
 
 - Choose **New… → Empty canvas**, then use **+ Router**, **+ PC** and **Link** to build any network. Addresses are assigned automatically and can be edited in the Inspector.

@@ -191,14 +191,16 @@ export function Canvas(p: Props) {
       ref={svgRef}
       className="net"
       viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+      preserveAspectRatio="xMidYMid meet"
       role="application"
       aria-label="Network topology. Use Tab to focus devices and Enter to select."
       onPointerMove={onMoveEv}
       onPointerUp={onUp}
       onPointerDown={(e) => {
         if (e.target === svgRef.current || (e.target as Element).getAttribute('data-bg')) {
+          // The drawing keeps its aspect ratio inside a resized panel; clicks in the margin are kept inside the drawing area.
           const pt = toSvg(e);
-          p.onBackground(pt.x, pt.y);
+          p.onBackground(clamp(pt.x, 30, VIEW_W - 30), clamp(pt.y, 30, VIEW_H - 40));
         }
       }}
     >

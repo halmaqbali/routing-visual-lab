@@ -44,7 +44,9 @@ export function Controls(p: ControlsProps) {
 
 const WINDOW = 120;
 
-export function Timeline({ frames, cursor, onJump, hideFuture }: { frames: Frame[]; cursor: number; onJump: (i: number) => void; hideFuture: boolean }) {
+export function Timeline({ frames, cursor, onJump, hideFuture, actions, collapsed, fill }: {
+  frames: Frame[]; cursor: number; onJump: (i: number) => void; hideFuture: boolean; actions?: React.ReactNode; collapsed?: boolean; fill?: boolean;
+}) {
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
     ref.current?.scrollIntoView({ block: 'nearest' });
@@ -52,9 +54,9 @@ export function Timeline({ frames, cursor, onJump, hideFuture }: { frames: Frame
   const from = Math.max(0, cursor - WINDOW);
   const to = hideFuture ? cursor + 1 : Math.min(frames.length, cursor + WINDOW);
   return (
-    <div className="card">
-      <div className="card-head"><h2>Event timeline</h2><span className="small muted">{frames.length} events</span></div>
-      <div className="timeline" tabIndex={0} aria-label="Event timeline">
+    <section className={`card ${fill ? 'panel' : ''}`} aria-label="Event timeline panel">
+      <div className="card-head"><h2>Event timeline</h2><span className="row"><span className="small muted">{frames.length} events</span>{actions}</span></div>
+      {!collapsed && <div className="timeline" tabIndex={0} aria-label="Event timeline">
         {from > 0 && <div className="small muted" style={{ padding: '0.3rem' }}>… {from} earlier events</div>}
         <ol>
           {frames.slice(from, to).map((f, k) => {
@@ -71,7 +73,7 @@ export function Timeline({ frames, cursor, onJump, hideFuture }: { frames: Frame
           })}
         </ol>
         {to < frames.length && <div className="small muted" style={{ padding: '0.3rem' }}>{hideFuture ? 'Future events hidden (Teacher Mode)' : `… ${frames.length - to} more events`}</div>}
-      </div>
-    </div>
+      </div>}
+    </section>
   );
 }

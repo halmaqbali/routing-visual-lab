@@ -117,9 +117,16 @@ export function Canvas(p: Props) {
         <g>
           <rect x={-19} y={-12} width={38} height={24} rx={3} fill={color} stroke="#fff" strokeWidth={1.5} />
           <path d="M-19 -12 L0 2 L19 -12" fill="none" stroke="#fff" strokeWidth={1.5} />
-          <text y={-18} textAnchor="middle" fontSize={13} fontWeight={800} stroke="var(--panel)" strokeWidth={4} paintOrder="stroke" style={{ fill: color }}>
-            {anim.label}{anim.ttl !== undefined ? ` · TTL ${anim.ttl}` : ''}
-          </text>
+          {(() => {
+            const text = `${anim.label}${anim.ttl !== undefined ? ` · TTL ${anim.ttl}` : ''}`;
+            const w = text.length * 7.6 + 14;
+            return (
+              <g transform="translate(0,-31)">
+                <rect x={-w / 2} y={-11} width={w} height={22} rx={11} fill="var(--panel)" stroke={color} strokeWidth={2} />
+                <text y={5} textAnchor="middle" fontSize={13} fontWeight={800} style={{ fill: color }}>{text}</text>
+              </g>
+            );
+          })()}
         </g>
       );
     else if (anim.style === 'dv')

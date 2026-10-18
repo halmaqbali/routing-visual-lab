@@ -58,9 +58,9 @@ export function DvRouterView({ state, router, frames, cursor }: { state: SimStat
     <div className="stack">
       <h4>What {deviceName(topo, router)} would advertise now</h4>
       {routerNeighbors(topo, router).map((nb) => {
-        const { adverts, omitted } = buildAdverts(state, router, nb.router, nb.link.id);
+        const { adverts, omitted } = buildAdverts(state, router, nb.router, nb.key);
         return (
-          <div key={nb.link.id} className="small">
+          <div key={nb.key} className="small">
             <strong>To {deviceName(topo, nb.router)}:</strong>{' '}
             <span className="mono">{adverts.map((a) => `${cidr(a.network, a.prefix)}=${inf(a.metric, infinity)}${a.poisoned ? '(poisoned)' : ''}`).join(', ') || '(nothing)'}</span>
             {omitted.length > 0 && <span className="muted"> · split horizon hides {omitted.join(', ')}</span>}

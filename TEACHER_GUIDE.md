@@ -66,10 +66,26 @@ Each part maps to something on screen:
 - Collapse the timeline or the learning panel when you don't need it. **Reset layout** in the top bar restores the default arrangement.
 - The layout is remembered on each computer, and is not stored in exported topology files.
 
+## Sharing labs and exercises with students
+
+1. Build or open a lab. Add **notes** on the canvas (✎ Note tool) with the task, hints or questions.
+2. Click **⇪ Share Lab** and choose:
+   - **The lab as it is**, for demonstrations; or
+   - **An exercise for students**: optionally remove all static routes, and add instructions. Students then see an exercise bar with **Check connectivity** and **Reset Lab**, which restores exactly what you shared.
+3. Send it as a **lab file** (email or your learning platform), as a **link**, or show the **QR code** on the projector.
+
+The link contains the whole lab, so nothing is uploaded. Students on any computer get their own copy, and your copy is never changed. Students keep their work with **Save Lab** (in their browser) or **Export**, which they can hand in as a file.
+
+## Lessons for the new features
+
+- **Switches vs routers:** use *New Lab → Switched LAN*. Ping PC1 → PC2 (same LAN): watch the ARP broadcast flood through SW1, then the switch forward known MACs to one port. Ping PC1 → PC3: ask why the frame's destination MAC is R1's, not PC3's. Open the **Packet** tab and compare the Ethernet and IP layers at each hop.
+- **Router ping and return paths:** use *New Lab → R1–R2–R3 with loopbacks*. Ask students to make R1 ping 10.0.3.3 (R3's loopback). Then ping *from R1's loopback* (source = LoopBack0): it fails until R3 has a route back to 10.0.1.0/24. The ping only succeeds when both directions work.
+- **Clear ARP & MAC tables** resets what was learned, so you can show ARP and flooding again.
+
 ## Building your own exercises
 
-- Choose **New… → Empty canvas**, then use **+ Router**, **+ PC** and **Link** to build any network. Addresses are assigned automatically and can be edited in the Inspector.
-- Use **Save** to download the exercise as JSON, and share it with students, who open it with **Load**.
+- Choose **＋ New Lab… → Empty canvas**, then use the device palette on the left (Router, PC, Switch, Link, Note) to build any network. Addresses are assigned automatically and can be edited in the Inspector.
+- **Save Lab** keeps it in your browser; **Export** downloads a file; **Share Lab** creates a file, link or QR code for students.
 - The app autosaves to the browser, so students can close the tab and continue later on the same computer.
 
 ## Keyboard shortcuts

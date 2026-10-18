@@ -5,9 +5,10 @@
 // RIP profile: every link costs 1 hop, 15 is the largest usable metric and 16 means unreachable.
 import { routeKey, sortTable, connectedRoutes, AD, type Route, type Table, diffTable, type Change } from './rib';
 import { RIP_INFINITY, RIP_UPDATE_INTERVAL, type SimOptions, type Topology } from '../model/types';
-import { getDevice, routerNeighbors, routers, type Neighbor } from '../model/topology';
-import { cloneState, frame, nm, popNext, push } from './core';
+import { routerNeighbors, routers, type Neighbor } from '../model/topology';
+import { adjPath, affectedRouters, cloneState, frame, nm, popNext, push } from './core';
 import type { Advert, DvCalcRow, Frame, Pending, SimState } from './types';
+import { dvView, macFn } from './packets';
 
 export const UPDATE_INTERVAL = RIP_UPDATE_INTERVAL;
 
@@ -40,7 +41,12 @@ export function dvInit(base: SimState): Frame[] {
   ];
 }
 
+/** RIP-style route timeout: a learned route that is not re-advertised by its next hop for this long becomes unreachable. */
+export const ROUTE_TIMEOUT = 180;
+
 function localIfaceOn(topo: Topology, router: string, linkId: string) {
+  const nb = routerNeighbors(topo, router).find((n) => n.key === linkId);
+  if (nb) return nb.localIface.id;
   const l = topo.links.find((x) => x.id === linkId);
   if (!l) return null;
   return l.a.dev === router ? l.a.iface : l.b.dev === router ? l.b.iface : null;
@@ -71,9 +77,9 @@ export function buildAdverts(s: SimState, from: string, to: string, linkId: stri
 }
 
 function sendTo(s: SimState, from: string, nb: Neighbor, triggered: boolean, keys?: string[]) {
-  const { adverts, omitted } = buildAdverts(s, from, nb.router, nb.link.id, keys);
+  const { adverts, omitted } = buildAdverts(s, from, nb.router, nb.key, keys);
   if (adverts.length === 0 && omitted.length === 0) return;
-  push(s, { t: s.time + 1, type: 'dv-deliver', from, to: nb.router, linkId: nb.link.id, adverts, omitted, triggered });
+  push(s, { t: s.time + 1, type: 'dv-deliver', from, to: nb.router, linkId: nb.key, adverts, omitted, triggered });
 }
 
 function scheduleTriggered(s: SimState, router: string, keys: string[]) {
@@ -93,7 +99,7 @@ function ensureRounds(s: SimState) {
 /** Receiver processing of one distance-vector update. Exported for unit tests. */
 export function processUpdate(s: SimState, to: string, from: string, linkId: string, adverts: Advert[]): { rows: DvCalcRow[]; table: Table; ok: boolean } {
   const inf = s.dv!.infinity;
-  const nb = routerNeighbors(s.topo, to).find((n) => n.router === from && n.link.id === linkId);
+  const nb = routerNeighbors(s.topo, to).find((n) => n.router === from && n.key === linkId);
   const table = [...(s.tables[to] ?? [])];
   if (!nb) return { rows: [], table, ok: false };
   const c = dvCost(s.options, nb.cost);
@@ -106,7 +112,7 @@ export function processUpdate(s: SimState, to: string, from: string, linkId: str
     const cur = idx >= 0 ? table[idx] : undefined;
     const curText = !cur ? 'no route' : cur.source === 'connected' ? 'connected (0)' : `${metricText(cur.unreachable ? inf : cur.metric, inf)} via ${nm(s, cur.learnedFrom ?? '')}`;
     const calc = a.metric >= inf ? `${fromName} says unreachable → candidate ∞` : `${c} + ${a.metric} = ${metricText(cand, inf)}`;
-    const route: Route = { network: a.network, prefix: a.prefix, source: 'dv', nextHop: nb.remoteIface.ip, iface: nb.localIface.id, metric: cand, ad: AD.dv, learnedFrom: from, unreachable: cand >= inf || undefined };
+    const route: Route = { network: a.network, prefix: a.prefix, source: 'dv', nextHop: nb.remoteIface.ip, iface: nb.localIface.id, metric: cand, ad: AD.dv, learnedFrom: from, unreachable: cand >= inf || undefined, refreshedAt: s.time };
     const row = (decision: DvCalcRow['decision'], text: string) => rows.push({ key: k, advertised: a.metric, linkCost: c, candidate: cand, current: curText, decision, text: `${k}: ${calc}. ${text}` });
     if (cur?.source === 'connected') {
       row('connected', 'Directly connected here (cost 0) — keep the connected route.');
@@ -118,7 +124,10 @@ export function processUpdate(s: SimState, to: string, from: string, linkId: str
       }
     } else if (cur.learnedFrom === from && cur.iface === nb.localIface.id) {
       const curM = cur.unreachable ? inf : cur.metric;
-      if (curM === cand) row('refresh', `Same as the current route via ${fromName} — no change.`);
+      if (curM === cand) {
+        table[idx] = { ...cur, refreshedAt: s.time };
+        row('refresh', `Same as the current route via ${fromName} — no change (the route's timeout restarts).`);
+      }
       else {
         table[idx] = route;
         row('update-same', cand >= inf
@@ -149,7 +158,9 @@ export function dvStep(prev: SimState): Frame[] {
 
   if (p.type === 'round') {
     const pendingWork = s.queue.some((q) => q.type !== 'round');
-    if (s.dv!.rounds > 0 && !s.dv!.changedSinceRound && !pendingWork) {
+    // A learned route that was not refreshed in the last round is waiting for its timeout: not converged yet.
+    const awaitingTimeout = Object.values(s.tables).some((t) => t.some((x) => x.source === 'dv' && !x.unreachable && x.refreshedAt !== undefined && x.refreshedAt < s.time - UPDATE_INTERVAL - 1));
+    if (s.dv!.rounds > 0 && !s.dv!.changedSinceRound && !pendingWork && !awaitingTimeout) {
       s.dv!.converged = true;
       s.done = true;
       return [frame(s, {
@@ -157,8 +168,25 @@ export function dvStep(prev: SimState): Frame[] {
         explain: `A full round of periodic updates changed nothing, so every router agrees on the best routes: the network has converged (after ${s.dv!.rounds} update round${s.dv!.rounds === 1 ? '' : 's'}). Real routers keep sending periodic updates; the simulation stops here.`,
       })];
     }
+    // Route timeout: learned routes whose next hop has stopped advertising them become unreachable.
+    const timeoutFrames: Frame[] = [];
+    for (const r of routers(s.topo)) {
+      const old = s.tables[r.id] ?? [];
+      const expired = old.filter((x) => x.source === 'dv' && !x.unreachable && x.learnedFrom && x.refreshedAt !== undefined && s.time - x.refreshedAt > ROUTE_TIMEOUT);
+      if (!expired.length) continue;
+      const table = old.map((x) => (expired.includes(x) ? { ...x, unreachable: true, metric: inf, note: `Timed out: not heard from ${nm(s, x.learnedFrom!)} for more than ${ROUTE_TIMEOUT} time units` } : x));
+      const changes = diffTable(r.id, old, table);
+      s.tables[r.id] = table;
+      s.dv!.changedSinceRound = true;
+      scheduleTriggered(s, r.id, changes.map((c) => c.key));
+      timeoutFrames.push(frame(s, {
+        kind: 'dv-timeout', category: 'control', title: `${r.name}: route timeout`, routers: [r.id],
+        explain: `${r.name} has not heard ${expired.map((x) => `${routeKey(x)} from ${nm(s, x.learnedFrom!)}`).join(', ')} for more than ${ROUTE_TIMEOUT} time units (RIP's 180-second timeout). The neighbour may have disappeared, so the route is marked unreachable.`,
+        changes,
+      }));
+    }
     s.dv!.rounds++;
-    s.dv!.changedSinceRound = false;
+    s.dv!.changedSinceRound = timeoutFrames.length > 0;
     let count = 0;
     for (const r of routers(s.topo)) {
       for (const nb of routerNeighbors(s.topo, r.id)) {
@@ -167,7 +195,7 @@ export function dvStep(prev: SimState): Frame[] {
       }
     }
     push(s, { t: s.time + UPDATE_INTERVAL, type: 'round' });
-    return [frame(s, {
+    return [...timeoutFrames.map((f) => ({ ...f, state: cloneState(f.state) })), frame(s, {
       kind: 'dv-round', category: 'control', title: `Update timer: periodic round ${s.dv!.rounds}`,
       explain: `The update timer expired (every ${UPDATE_INTERVAL} time units). Each router sends its current distance vector — a list of "network, cost" pairs — to each neighbour. ${count} updates are now on their way (each takes 1 time unit).`,
     })];
@@ -191,7 +219,7 @@ export function dvStep(prev: SimState): Frame[] {
       return [frame(s, {
         kind: 'dv-lost', category: 'control', title: `Update ${fromN} → ${toN} lost`, routers: [p.to],
         explain: `The link between ${fromN} and ${toN} is down, so this update never arrives.`,
-        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'dv', drop: true, label: 'DV' },
+        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'dv', drop: true, label: 'DV', path: adjPath(prev.topo, p.from, p.linkId) },
       })];
     }
     const changes: Change[] = diffTable(p.to, s.tables[p.to] ?? [], table);
@@ -208,9 +236,10 @@ export function dvStep(prev: SimState): Frame[] {
       kind: 'dv-update', category: 'control', title: `${fromN} → ${toN}: ${p.triggered ? 'triggered' : 'periodic'} update`, routers: [p.to, p.from],
       explain: `${toN} receives ${fromN}'s distance vector. ${fromN} only says HOW FAR it is from each network, not the path. ${toN} adds the cost of the link to ${fromN} to every advertised cost and keeps the cheapest option. ${summary}${sh}${poison}`,
       detail: [`Advertised: ${advText || '(nothing)'}`, ...rows.map((r) => r.text)],
-      anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'dv', label: p.triggered ? 'DV!' : 'DV' },
+      anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'dv', label: p.triggered ? 'DV!' : 'DV', path: adjPath(s.topo, p.from, p.linkId) },
       changes,
       dv: { from: p.from, to: p.to, adverts: p.adverts, omitted: p.omitted, rows, triggered: p.triggered },
+      packet: dvView(s.topo, p.from, p.to, p.linkId, p.adverts, s.options.dv.profile === 'rip', inf, p.triggered, macFn(s.topo)),
     })];
   }
   return [];
@@ -223,13 +252,8 @@ export function dvLinkChange(prev: SimState, newTopo: Topology, linkIds: string[
   const oldTopo = s.topo;
   s.topo = newTopo;
   const inf = s.dv!.infinity;
-  const affected = new Set<string>();
-  for (const id of linkIds) {
-    const l = newTopo.links.find((x) => x.id === id) ?? oldTopo.links.find((x) => x.id === id);
-    if (!l) continue;
-    for (const end of [l.a.dev, l.b.dev]) if (getDevice(newTopo, end)?.kind === 'router') affected.add(end);
-  }
-  for (const r of [...affected].sort()) {
+  const affected = affectedRouters([oldTopo, newTopo], linkIds);
+  for (const r of affected) {
     const old = s.tables[r] ?? [];
     const conn = connectedRoutes(newTopo, r);
     const connKeys = new Set(conn.map(routeKey));
@@ -257,15 +281,11 @@ export function dvLinkChange(prev: SimState, newTopo: Topology, linkIds: string[
       s = cloneState(s);
     }
   }
-  // When a link comes up, both ends send their full table to the new neighbour (if triggered updates are on).
+  // A new adjacency (link up, or a router joining a switch): both routers send their full table at once (if triggered updates are on).
   if (s.options.dv.triggeredUpdates) {
-    for (const id of linkIds) {
-      const was = oldTopo.links.find((x) => x.id === id);
-      const now = newTopo.links.find((x) => x.id === id);
-      if (now?.up && !was?.up) {
-        for (const [a, b] of [[now.a.dev, now.b.dev], [now.b.dev, now.a.dev]])
-          if (getDevice(newTopo, a)?.kind === 'router' && getDevice(newTopo, b)?.kind === 'router') push(s, { t: s.time, type: 'full-update', router: a, to: b });
-      }
+    for (const r of affected) {
+      const before = new Set(routerNeighbors(oldTopo, r).map((n) => n.key));
+      for (const nb of routerNeighbors(newTopo, r)) if (!before.has(nb.key)) push(s, { t: s.time, type: 'full-update', router: r, to: nb.router });
     }
   }
   ensureRounds(s);

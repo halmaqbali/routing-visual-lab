@@ -117,7 +117,11 @@ export function Splitter(p: SplitterProps) {
   const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
     drag.current = { start: vertical ? e.clientX : e.clientY, startValue: p.value, last: p.value };
     setActive(true);
     document.body.classList.add(vertical ? 'resizing-x' : 'resizing-y');

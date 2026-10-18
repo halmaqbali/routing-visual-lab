@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { cidr, inSubnet, isValidIp, networkOf } from '../model/ip';
-import { deviceName, getDevice, linkOfIface, otherEnd, routerNeighbors } from '../model/topology';
+import { addLoopback, deviceName, getDevice, isLoopback, linkOfIface, macOf, otherEnd, routerNeighbors, segmentOf } from '../model/topology';
 import type { Device, Level, Link, SimOptions, StaticRoute, Topology } from '../model/types';
 import { validateIfaceAddress, validateStaticRoute } from '../model/validate';
 import { generateCli } from '../engine/cli';
@@ -46,7 +46,7 @@ export function Inspector(p: Props) {
   }
   const dev = getDevice(topo, p.sel.id);
   if (!dev) return null;
-  return dev.kind === 'pc' ? <PcPanel {...p} dev={dev} /> : <RouterPanel {...p} dev={dev} />;
+  return dev.kind === 'pc' ? <PcPanel {...p} dev={dev} /> : dev.kind === 'switch' ? <SwitchPanel {...p} dev={dev} /> : <RouterPanel {...p} dev={dev} />;
 }
 
 function LinkPanel(p: Props & { link: Link }) {
@@ -150,7 +150,9 @@ function PcPanel(p: Props & { dev: Device }) {
       {!ifc && <p className="muted small">Connect this PC to a router with the Link tool first.</p>}
       {ipErr && <p className="issue error">{ipErr}</p>}
       {gwErr && <p className="issue error">{gwErr}</p>}
-      {peer && <p className="small muted">Connected to {peer.name}. Its interface on this link is the usual gateway.</p>}
+      {peer && <p className="small muted">Connected to {peer.name}{peer.kind === 'switch' ? ' (switch)' : ''}. {peer.kind === 'switch' ? 'The gateway must be a router interface on the same switched LAN.' : 'Its interface on this link is the usual gateway.'}</p>}
+      {ifc && <p className="small">MAC address (Layer 2): <span className="mono">{macOf(dev.id, ifc)}</span></p>}
+      <ArpTable state={p.state} dev={dev} />
       <div className="row" style={{ marginTop: '0.5rem' }}>
         <button className="btn primary" onClick={apply} disabled={!!ipErr || !!gwErr}>Apply (restarts simulation)</button>
         <button className="btn danger small" onClick={() => p.onDelete(p.sel)}>Delete PC</button>
@@ -161,7 +163,7 @@ function PcPanel(p: Props & { dev: Device }) {
 
 function RouterPanel(p: Props & { dev: Device }) {
   const mode = p.state.mode;
-  const [tab, setTab] = useState<'table' | 'ifaces' | 'static' | 'proto' | 'cli' | 'history'>('table');
+  const [tab, setTab] = useState<'table' | 'ifaces' | 'static' | 'proto' | 'cli' | 'history' | 'arp'>('table');
   useEffect(() => {
     if (tab === 'static' && mode !== 'static') setTab('table');
   }, [mode, tab]);
@@ -174,6 +176,7 @@ function RouterPanel(p: Props & { dev: Device }) {
     ...(mode === 'static' ? ([['static', `Static routes (${dev.staticRoutes.length})`]] as [typeof tab, string][]) : []),
     ...(mode === 'dv' ? ([['proto', 'DV updates']] as [typeof tab, string][]) : []),
     ...(mode === 'ls' ? ([['proto', 'Link state']] as [typeof tab, string][]) : []),
+    ['arp', 'ARP cache'],
     ['history', 'History'],
     ['cli', 'CLI'],
   ];
@@ -202,6 +205,7 @@ function RouterPanel(p: Props & { dev: Device }) {
       {tab === 'static' && <StaticEditor {...p} />}
       {tab === 'proto' && mode === 'dv' && <DvRouterView state={p.state} router={dev.id} frames={p.frames} cursor={p.cursor} />}
       {tab === 'proto' && mode === 'ls' && <LsRouterView state={p.state} router={dev.id} />}
+      {tab === 'arp' && <ArpTable state={p.state} dev={dev} />}
       {tab === 'history' && <History {...p} />}
       {tab === 'cli' && <Cli {...p} />}
     </div>
@@ -253,17 +257,21 @@ function IfaceEditor(p: Props & { dev: Device }) {
       <div className="row"><label>Name <input type="text" value={name} onChange={(e) => setName(e.target.value)} style={{ width: '8rem' }} /></label></div>
       {draft.length === 0 && <p className="muted small">No interfaces. Use the Link tool to connect this router.</p>}
       <table className="tbl">
-        <thead><tr><th>Interface</th><th>IP address</th><th>/</th><th>Link to</th></tr></thead>
+        <thead><tr><th>Interface</th><th>IP address</th><th>/</th><th>Link to</th>{p.level === 'advanced' && <th>MAC</th>}<th></th></tr></thead>
         <tbody>
           {draft.map((d, k) => {
             const link = linkOfIface(topo, p.dev.id, d.id);
-            const peer = link ? deviceName(topo, otherEnd(link, p.dev.id).dev) : '-';
+            const peer = isLoopback(d) ? 'virtual (always up)' : link ? deviceName(topo, otherEnd(link, p.dev.id).dev) : '-';
             return (
               <tr key={d.id}>
                 <td className="mono">{d.name}</td>
                 <td><input type="text" value={d.ip} aria-label={`${d.name} IP address`} className={errs[k] ? 'bad' : ''} style={{ width: '9.5rem' }} onChange={(e) => setDraft(draft.map((x) => (x.id === d.id ? { ...x, ip: e.target.value } : x)))} /></td>
                 <td><input type="number" min={1} max={31} value={d.prefixS} aria-label={`${d.name} prefix length`} style={{ width: '4rem' }} onChange={(e) => setDraft(draft.map((x) => (x.id === d.id ? { ...x, prefixS: e.target.value } : x)))} /></td>
                 <td>{peer} {link && !link.up && <span className="badge del">DOWN</span>}</td>
+                {p.level === 'advanced' && <td className="mono small">{isLoopback(d) ? '—' : macOf(p.dev.id, d)}</td>}
+                <td>{isLoopback(d) && (
+                  <button className="btn small danger" onClick={() => { const t = structuredClone(topo); const dd = getDevice(t, p.dev.id)!; dd.ifaces = dd.ifaces.filter((i) => i.id !== d.id); p.onStructural(t, `Removed ${d.name} from ${p.dev.name}`); }}>Remove</button>
+                )}</td>
               </tr>
             );
           })}
@@ -272,7 +280,86 @@ function IfaceEditor(p: Props & { dev: Device }) {
       {errs.map((e, k) => e && <p key={k} className="issue error">{draft[k].name}: {e}</p>)}
       <div className="row">
         <button className="btn primary" onClick={apply} disabled={errs.some(Boolean)}>Apply (restarts simulation)</button>
+        {p.dev.kind === 'router' && <button className="btn" onClick={() => p.onStructural(addLoopback(topo, p.dev.id), `Added a loopback interface to ${p.dev.name}`)}>+ Add loopback</button>}
       </div>
+      {p.dev.kind === 'router' && <p className="small muted">A loopback is a virtual interface that is always up. It is handy as a stable address to ping (for example R3's 10.0.3.3) and is advertised by RIP/OSPF like any connected network.</p>}
+    </div>
+  );
+}
+
+function ArpTable({ state, dev }: { state: SimState; dev: Device }) {
+  const entries = Object.entries(state.l2.arp[dev.id] ?? {});
+  return (
+    <div className="stack small">
+      <h4>ARP cache (IP → MAC)</h4>
+      {entries.length === 0 ? <p className="muted">Empty. {dev.name} learns entries when it sends or receives ARP (run a ping).</p> : (
+        <table className="tbl">
+          <thead><tr><th>IP address</th><th>MAC address</th><th>Owner</th></tr></thead>
+          <tbody>
+            {entries.map(([ip, e]) => (
+              <tr key={ip}><td className="mono">{ip}</td><td className="mono">{e.mac}</td><td>{state.topo.devices.find((d) => d.ifaces.some((i) => i.ip === ip))?.name ?? '?'}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function SwitchPanel(p: Props & { dev: Device }) {
+  const topo = p.state.topo;
+  const { dev } = p;
+  const [name, setName] = useState(dev.name);
+  useEffect(() => setName(dev.name), [dev.name]);
+  const table = p.state.l2.mac[dev.id] ?? [];
+  const lan = (() => {
+    for (const port of dev.ifaces) {
+      const l = linkOfIface(topo, dev.id, port.id);
+      if (l?.up) {
+        const o = otherEnd(l, dev.id);
+        return segmentOf(topo, o.dev, o.iface).endpoints;
+      }
+    }
+    return [];
+  })();
+  const owner = (mac: string) => topo.devices.flatMap((d) => d.ifaces.map((i) => ({ d, i }))).find(({ d, i }) => d.kind !== 'switch' && macOf(d.id, i) === mac);
+  return (
+    <div className="card">
+      <div className="card-head"><h2>Switch {dev.name}</h2><span className="pill">unmanaged · Layer 2</span></div>
+      <p className="small">An unmanaged switch forwards <strong>Ethernet frames</strong> using MAC addresses. It has no IP address, no routing table and no configuration: it never routes IP packets between networks — that is the router's job. All devices connected through it are in one network (one subnet, one broadcast domain).</p>
+      <div className="row"><label>Name <input type="text" value={name} onChange={(e) => setName(e.target.value)} style={{ width: '8rem' }} /></label>
+        <button className="btn small" disabled={!name.trim() || name === dev.name} onClick={() => { const t = structuredClone(topo); getDevice(t, dev.id)!.name = name.trim(); p.onStructural(t, `Renamed switch to ${name.trim()}`); }}>Rename</button></div>
+      <h4>Ports</h4>
+      <table className="tbl small">
+        <thead><tr><th>Port</th><th>Connected to</th><th>State</th></tr></thead>
+        <tbody>
+          {dev.ifaces.map((i) => {
+            const l = linkOfIface(topo, dev.id, i.id);
+            const o = l ? otherEnd(l, dev.id) : null;
+            return <tr key={i.id}><td>{i.name}</td><td>{o ? `${deviceName(topo, o.dev)} ${topo.devices.find((d) => d.id === o.dev)?.ifaces.find((x) => x.id === o.iface)?.name ?? ''}` : '-'}</td><td>{l?.up ? 'up' : <span className="badge del">DOWN</span>}</td></tr>;
+          })}
+        </tbody>
+      </table>
+      <h4>MAC address table</h4>
+      {table.length === 0 ? <p className="small muted">Empty. The switch learns the SOURCE MAC of every frame it receives, and which port it came in on. Run a ping to fill it.</p> : (
+        <table className="tbl small">
+          <thead><tr><th>MAC address</th><th>Port</th><th>Device</th><th>Age</th></tr></thead>
+          <tbody>
+            {table.map((e) => {
+              const o = owner(e.mac);
+              return <tr key={e.mac}><td className="mono">{e.mac}</td><td>{topo.devices.find((d) => d.id === dev.id)?.ifaces.find((i) => i.id === e.port)?.name}</td><td>{o ? `${o.d.name} ${o.i.name}` : '?'}</td><td>{p.state.time - e.learnedAt}</td></tr>;
+            })}
+          </tbody>
+        </table>
+      )}
+      <ul className="small muted">
+        <li><strong>Known destination MAC</strong> → forward out of that one port.</li>
+        <li><strong>Broadcast or unknown destination</strong> → flood out of every other port.</li>
+        <li>Entries age out after 300 time units without traffic, and are removed when a port goes down; they are then relearned.</li>
+        <li>No Spanning Tree: loops between switches are rejected.</li>
+      </ul>
+      {lan.length > 0 && <p className="small">Devices on this LAN: {lan.map((e) => `${e.dev.name} (${e.iface.ip || 'no IP'})`).join(', ')}</p>}
+      <button className="btn danger small" onClick={() => p.onDelete(p.sel)}>Delete switch</button>
     </div>
   );
 }
@@ -357,7 +444,7 @@ function StaticEditor(p: Props & { dev: Device }) {
           <label htmlFor="sr-nh">Next hop</label>
           <div className="row">
             <input id="sr-nh" type="text" list="nh-list" placeholder="10.0.12.2" value={form.nextHop} onChange={(e) => setForm({ ...form, nextHop: e.target.value })} />
-            <datalist id="nh-list">{neighbors.map((n) => <option key={n.link.id} value={n.remoteIface.ip}>{deviceName(topo, n.router)}</option>)}</datalist>
+            <datalist id="nh-list">{neighbors.map((n) => <option key={n.key} value={n.remoteIface.ip}>{deviceName(topo, n.router)}</option>)}</datalist>
           </div>
           {adv && (
             <>

@@ -1,5 +1,5 @@
 import { cidr, hostAddressProblem, inSubnet, isNetworkAddress, isValidIp, isValidPrefix, networkOf } from './ip';
-import { getDevice, getIface, linkOfIface, otherEnd } from './topology';
+import { getDevice, isLoopback, segmentOf } from './topology';
 import type { Device, StaticRoute, Topology } from './types';
 
 export interface Issue {
@@ -42,12 +42,16 @@ export function validateStaticRoute(_topo: Topology, dev: Device, r: StaticRoute
 export function validateTopology(topo: Topology): Issue[] {
   const issues: Issue[] = [];
   const seenIp = new Map<string, string>();
-  const subnetOwner = new Map<string, string>(); // subnet -> link id
+  const subnetOwner = new Map<string, string>(); // subnet -> where it is used
 
   for (const dev of topo.devices) {
     if (!dev.name.trim()) issues.push({ severity: 'error', dev: dev.id, message: 'A device has an empty name.' });
     for (const ifc of dev.ifaces) {
       const where = `${dev.name} ${ifc.name}`;
+      if (dev.kind === 'switch') {
+        if (ifc.ip) issues.push({ severity: 'error', dev: dev.id, message: `${where}: an unmanaged switch port has no IP address. Remove ${ifc.ip}; switches forward Ethernet frames and do not route IP.` });
+        continue;
+      }
       if (!ifc.ip) {
         issues.push({ severity: 'warning', dev: dev.id, message: `${where} has no IP address, so it cannot send or receive IP packets.` });
         continue;
@@ -72,30 +76,63 @@ export function validateTopology(topo: Topology): Issue[] {
       else if (ifc && ifc.ip && !inSubnet(dev.gateway, ifc.ip, ifc.prefix))
         issues.push({ severity: 'error', dev: dev.id, message: `${dev.name} default gateway ${dev.gateway} is not in its own subnet ${cidr(networkOf(ifc.ip, ifc.prefix), ifc.prefix)}. A gateway must be directly reachable.` });
       else if (ifc) {
-        const link = linkOfIface(topo, dev.id, ifc.id);
-        const peer = link ? getIface(topo, otherEnd(link, dev.id).dev, otherEnd(link, dev.id).iface) : undefined;
-        if (peer && peer.ip !== dev.gateway)
-          issues.push({ severity: 'error', dev: dev.id, message: `${dev.name} default gateway ${dev.gateway} does not match the router interface on its link (${peer.ip || 'no address'}).` });
+        const seg = segmentOf(topo, dev.id, ifc.id).endpoints;
+        const routersOnSeg = seg.filter((e) => e.dev.kind === 'router');
+        if (seg.length > 1 && !routersOnSeg.some((e) => e.iface.ip === dev.gateway))
+          issues.push({ severity: 'error', dev: dev.id, message: `${dev.name} default gateway ${dev.gateway} is not a router interface on its network (${routersOnSeg.map((e) => `${e.dev.name} ${e.iface.ip || 'no address'}`).join(', ') || 'no router connected'}).` });
       }
-    } else {
+    } else if (dev.kind === 'router') {
       for (const r of dev.staticRoutes) issues.push(...validateStaticRoute(topo, dev, r));
     }
   }
 
+  // Switch loops: this lab has no Spanning Tree Protocol, so a loop of switches would cause a broadcast storm.
+  const parent = new Map<string, string>();
+  const find = (x: string): string => (parent.get(x) ?? x) === x ? x : find(parent.get(x)!);
   for (const link of topo.links) {
-    const ia = getIface(topo, link.a.dev, link.a.iface);
-    const ib = getIface(topo, link.b.dev, link.b.iface);
+    const da = getDevice(topo, link.a.dev);
+    const db = getDevice(topo, link.b.dev);
+    if (!link.up || da?.kind !== 'switch' || db?.kind !== 'switch') continue;
+    const ra = find(da.id);
+    const rb = find(db.id);
+    if (ra === rb) issues.push({ severity: 'error', link: link.id, message: `Switch loop through ${da.name}–${db.name}. Unmanaged switches here have no Spanning Tree Protocol, so a loop would flood broadcasts forever. Disable or remove one of the links.` });
+    else parent.set(ra, rb);
+  }
+
+  for (const link of topo.links) {
     const na = getDevice(topo, link.a.dev)?.name;
     const nb = getDevice(topo, link.b.dev)?.name;
     if (!Number.isFinite(link.cost) || link.cost < 1 || !Number.isInteger(link.cost)) issues.push({ severity: 'error', link: link.id, message: `Link ${na}–${nb} cost must be a whole number of at least 1.` });
-    if (!ia || !ib || !ia.ip || !ib.ip || validateIfaceAddress(ia.ip, ia.prefix) || validateIfaceAddress(ib.ip, ib.prefix)) continue;
-    if (ia.prefix !== ib.prefix || !inSubnet(ib.ip, ia.ip, ia.prefix))
-      issues.push({ severity: 'error', link: link.id, message: `Link ${na}–${nb}: ${ia.ip}/${ia.prefix} and ${ib.ip}/${ib.prefix} are not in the same subnet, so the two ends cannot talk to each other.` });
-    else {
-      const s = cidr(networkOf(ia.ip, ia.prefix), ia.prefix);
-      const prev = subnetOwner.get(s);
-      if (prev) issues.push({ severity: 'error', link: link.id, message: `Network ${s} is used on two different links. Each link needs its own network.` });
-      else subnetOwner.set(s, link.id);
+  }
+
+  // Each Layer 2 segment (a direct link, or everything joined by switches) must use exactly one subnet.
+  const seen = new Set<string>();
+  for (const dev of topo.devices) {
+    if (dev.kind === 'switch') continue;
+    for (const ifc of dev.ifaces) {
+      if (isLoopback(ifc) || seen.has(`${dev.id}/${ifc.id}`)) continue;
+      const seg = segmentOf(topo, dev.id, ifc.id).endpoints;
+      seg.forEach((e) => seen.add(`${e.dev.id}/${e.iface.id}`));
+      const addressed = seg.filter((e) => e.iface.ip && !validateIfaceAddress(e.iface.ip, e.iface.prefix));
+      if (addressed.length === 0) continue;
+      const first = addressed[0];
+      const odd = addressed.filter((e) => e.iface.prefix !== first.iface.prefix || !inSubnet(e.iface.ip, first.iface.ip, first.iface.prefix));
+      const label = seg.map((e) => e.dev.name).join(', ');
+      if (odd.length)
+        issues.push({ severity: 'error', dev: odd[0].dev.id, message: `${label} share one network segment but are not in the same subnet (${addressed.map((e) => `${e.dev.name} ${e.iface.ip}/${e.iface.prefix}`).join(', ')}). Devices that can reach each other directly must use one subnet.` });
+      else {
+        const sn = cidr(networkOf(first.iface.ip, first.iface.prefix), first.iface.prefix);
+        const prev = subnetOwner.get(sn);
+        if (prev) issues.push({ severity: 'error', dev: first.dev.id, message: `Network ${sn} is used on two separate segments (${prev} and ${label}). Each link or switched LAN needs its own network.` });
+        else subnetOwner.set(sn, label);
+      }
+    }
+    for (const ifc of dev.ifaces.filter(isLoopback)) {
+      if (!ifc.ip || validateIfaceAddress(ifc.ip, ifc.prefix)) continue;
+      const sn = cidr(networkOf(ifc.ip, ifc.prefix), ifc.prefix);
+      const prev = subnetOwner.get(sn);
+      if (prev) issues.push({ severity: 'error', dev: dev.id, message: `${dev.name} ${ifc.name} network ${sn} is already used by ${prev}. A loopback needs its own network.` });
+      else subnetOwner.set(sn, `${dev.name} ${ifc.name}`);
     }
   }
   return issues;

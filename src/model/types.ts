@@ -1,12 +1,16 @@
 // Configuration model (what the student configures). Learned routing state lives in the engine.
 
-export type DeviceKind = 'router' | 'pc';
+export type DeviceKind = 'router' | 'pc' | 'switch';
 
 export interface Iface {
   id: string;
-  name: string; // e.g. G0/0/0 or eth0
-  ip: string; // '' when not configured
+  name: string; // e.g. G0/0/0, eth0, LoopBack0 or Port 1
+  ip: string; // '' when not configured (always '' on switch ports)
   prefix: number;
+  /** Loopback interfaces are virtual: always up, never attached to a link. */
+  kind?: 'loopback';
+  /** Optional fixed MAC address; otherwise a stable one is derived from the ids. */
+  mac?: string;
 }
 
 export interface StaticRoute {

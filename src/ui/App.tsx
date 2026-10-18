@@ -1,48 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_OPTIONS, type Level, type Link, type Mode, type SimOptions, type Topology } from '../model/types';
-import { fiveRouter, threeRouter, triangle } from '../model/samples';
-import { addDevice, addLink, deviceName, getDevice, pcs, removeDevice, removeLink } from '../model/topology';
+import { fiveRouter, loopbackLine, switchedLan, threeRouter, triangle } from '../model/samples';
+import { addDevice, addLink, deviceName, getDevice, removeDevice, removeLink } from '../model/topology';
 import { validateTopology } from '../model/validate';
-import { applyLinkChange, applyStaticConfigChange, buildPingFrames, createTimeline, insertFrames, pingStatsFrame } from '../engine/simulation';
+import { applyLinkChange, applyStaticConfigChange, buildPingFrames, clearL2, createTimeline, insertFrames, pingStatsFrame } from '../engine/simulation';
 import { lookup, routeKey } from '../engine/rib';
 import type { Frame, SimState } from '../engine/types';
 import { SCENARIOS, type Scenario } from '../scenarios';
-import { Canvas, type DirLink, type Sel, type Tool } from './Canvas';
+import { coreOf, LAB_FORMAT, LAB_VERSION, mergeOptions, newId, parseLabText, type Lab, type LabCore, type Note } from '../lab/lab';
+import { LabLibrary } from '../lab/library';
+import { decodeLab, labCodeFromHash } from '../lab/share';
+import { applyTheme, loadTheme, saveTheme, type ThemePref } from '../lab/theme';
+import { Canvas, DEFAULT_VIEW, fitView, GRID, VIEW_H, VIEW_W, type DirLink, type Sel, type Tool, type View } from './Canvas';
 import { Inspector } from './Inspector';
 import { Explain } from './Explain';
 import { Controls, Timeline } from './Timeline';
 import { Assumptions, ComparePanel, Legend, ScenarioPanel, SettingsPanel } from './Panels';
 import { clamp, DEFAULT_LAYOUT, MIN, PANEL_NAMES, PanelBar, PanelButtons, Splitter, useElementSize, useLayoutPrefs, useMediaQuery, type MoveDir, type PanelId } from './Layout';
+import { PacketInspector } from './PacketInspector';
+import { ConnectivityCheck, downloadLab, NameDialog, OpenLabDialog, ShareDialog } from './LabDialogs';
+import { addressList, NotePanel, PingTool, type PingForm } from './Tools';
 
 type ViewMode = Mode | 'compare';
 /** A ping in progress: pings are sent one at a time, as the timeline reaches each one. */
-interface PingRun { src: string; dst: string; total: number; sent: number; received: number; endIndex: number; waitAt: number | null }
+interface PingRun { form: PingForm; total: number; sent: number; received: number; endIndex: number; waitAt: number | null }
 interface Teacher { on: boolean; gate: boolean; oneAtATime: boolean; hideValues: boolean }
-interface Saved { format: 'routing-visual-lab'; version: 1; topo: Topology; mode: ViewMode; options: SimOptions; level: Level; scenario?: string | null }
-
-const AUTOSAVE_KEY = 'routing-visual-lab:autosave';
-
-function loadAutosave(): Saved | null {
-  try {
-    const raw = localStorage.getItem(AUTOSAVE_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw) as Saved;
-    return isSaved(s) ? s : null;
-  } catch {
-    return null;
-  }
-}
-
-function isSaved(s: unknown): s is Saved {
-  const x = s as Saved;
-  return !!x && x.format === 'routing-visual-lab' && Array.isArray(x.topo?.devices) && Array.isArray(x.topo?.links) && ['static', 'dv', 'ls', 'compare'].includes(x.mode);
-}
-
-function mergeOptions(o?: Partial<SimOptions>): SimOptions {
-  return { ...DEFAULT_OPTIONS, ...o, dv: { ...DEFAULT_OPTIONS.dv, ...(o?.dv ?? {}) } };
-}
+interface LabInfo { id: string; name: string; createdAt: string; inLibrary: boolean; exercise?: Lab['exercise'] }
+interface Snapshot { topo: Topology; notes: Note[] }
+type DetailsTab = 'inspect' | 'packet' | 'scenario' | 'settings';
 
 const simModeOf = (m: ViewMode): Mode => (m === 'compare' ? 'static' : m);
+const startCursor = (m: ViewMode, f: Frame[]) => (simModeOf(m) === 'static' ? f.length - 1 : 0);
 
 /** Follow next hops from a router towards a network, for highlighting a selected route. */
 function tracePath(state: SimState, start: string, key: string): DirLink[] {
@@ -61,45 +49,73 @@ function tracePath(state: SimState, start: string, key: string): DirLink[] {
     const peer = link.a.dev === cur ? link.b.dev : link.a.dev;
     const peerDev = getDevice(state.topo, peer);
     if (r.source === 'connected') {
-      if (peerDev?.kind === 'pc') out.push({ linkId: link.id, from: cur, to: peer });
+      if (peerDev?.kind !== 'router') out.push({ linkId: link.id, from: cur, to: peer });
       break;
     }
     out.push({ linkId: link.id, from: cur, to: peer });
+    if (peerDev?.kind !== 'router') break;
     cur = peer;
   }
   return out;
 }
 
+function defaultPing(topo: Topology): PingForm {
+  const hosts = topo.devices.filter((d) => d.kind === 'pc' && d.ifaces[0]?.ip);
+  const src = hosts[0] ?? topo.devices.find((d) => d.kind === 'router');
+  const dst = hosts[hosts.length - 1] && hosts.length > 1 ? hosts[hosts.length - 1].ifaces[0].ip : addressList(topo).find((a) => a.dev !== src?.id)?.ip ?? '';
+  return { src: src?.id ?? '', srcIp: '', dstIp: dst };
+}
+
 export default function App() {
-  const saved = useMemo(loadAutosave, []);
-  const [topo, setTopo] = useState<Topology>(saved?.topo ?? threeRouter());
-  const [mode, setMode] = useState<ViewMode>(saved?.mode ?? 'static');
-  const [options, setOptions] = useState<SimOptions>(mergeOptions(saved?.options));
-  const [level, setLevel] = useState<Level>(saved?.level ?? 'beginner');
-  const [frames, setFrames] = useState<Frame[]>(() => createTimeline(saved?.topo ?? threeRouter(), simModeOf(saved?.mode ?? 'static'), mergeOptions(saved?.options)));
-  const [cursor, setCursor] = useState(() => ((saved?.mode ?? 'static') === 'dv' || saved?.mode === 'ls' ? 0 : 1));
+  const library = useMemo(() => new LabLibrary(), []);
+  const initial = useMemo(() => library.loadCurrent(), [library]);
+  const [topo, setTopo] = useState<Topology>(initial?.topo ?? threeRouter());
+  const [notes, setNotes] = useState<Note[]>(initial?.notes ?? []);
+  const [mode, setMode] = useState<ViewMode>(initial?.mode ?? 'static');
+  const [options, setOptions] = useState<SimOptions>(mergeOptions(initial?.options));
+  const [level, setLevel] = useState<Level>(initial?.level ?? 'beginner');
+  const [labInfo, setLabInfo] = useState<LabInfo>(() => ({
+    id: initial?.id ?? newId(), name: initial?.name ?? 'My lab', createdAt: initial?.createdAt ?? new Date().toISOString(),
+    inLibrary: !!initial && !!library.load(initial.id), exercise: initial?.exercise,
+  }));
+  const [dirty, setDirty] = useState(false);
+  const [frames, setFrames] = useState<Frame[]>(() => createTimeline(initial?.topo ?? threeRouter(), simModeOf(initial?.mode ?? 'static'), mergeOptions(initial?.options)));
+  const [cursor, setCursor] = useState(() => {
+    const f0 = frames;
+    const saved = initial?.sim?.cursor;
+    return typeof saved === 'number' ? clamp(saved, 0, f0.length - 1) : startCursor(initial?.mode ?? 'static', f0);
+  });
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [pos, setPos] = useState<Record<string, { x: number; y: number }>>({});
+  const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [sel, setSel] = useState<Sel>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [tool, setTool] = useState<Tool>('select');
   const [pendingLink, setPendingLink] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'info' | 'warn' | 'err'; text: string } | null>(null);
-  const [scenarioId, setScenarioId] = useState<string | null>(saved?.scenario ?? null);
+  const [scenarioId, setScenarioId] = useState<string | null>(initial?.scenario ?? null);
   const [predicted, setPredicted] = useState<string | null>(null);
   const [ungated, setUngated] = useState(false);
   const [teacher, setTeacher] = useState<Teacher>({ on: false, gate: true, oneAtATime: false, hideValues: false });
   const [large, setLarge] = useState(false);
   const [follow, setFollow] = useState(true);
   const [showAddr, setShowAddr] = useState(true);
+  const [showGrid, setShowGrid] = useState(true);
+  const [snap, setSnap] = useState(true);
   const [showAssumptions, setShowAssumptions] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const [pingSrc, setPingSrc] = useState('pc1');
-  const [pingDst, setPingDst] = useState('pc2');
+  const [pingForm, setPingForm] = useState<PingForm>(() => defaultPing(initial?.topo ?? threeRouter()));
   const [pingCount, setPingCount] = useState(3); // 0 = continuous until Stop
   const [run, setRun] = useState<PingRun | null>(null);
   const [lastStats, setLastStats] = useState<{ sent: number; received: number } | null>(null);
+  const [detailsTab, setDetailsTab] = useState<DetailsTab>('inspect');
+  const [dialog, setDialog] = useState<null | 'open' | 'share' | 'save' | 'check' | { shared: Lab }>(null);
+  const [theme, setTheme] = useState<ThemePref>(() => loadTheme(typeof localStorage !== 'undefined' ? localStorage : null));
+  const undoStack = useRef<Snapshot[]>([]);
+  const redoStack = useRef<Snapshot[]>([]);
+  const [, setHistoryTick] = useState(0);
+  const gestureSnap = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
   // Layout (separate from simulation state: resizing never touches frames, topology or selection)
   const wide = useMediaQuery('(min-width: 900px)');
@@ -127,19 +143,31 @@ export default function App() {
     document.documentElement.classList.toggle('large', large);
   }, [large]);
 
-  // Autosave (browser-local). Failures (private mode, blocked storage) are ignored.
   useEffect(() => {
-    const t = setTimeout(() => {
-      try {
-        const withPos = applyPositions(topo, pos);
-        const s: Saved = { format: 'routing-visual-lab', version: 1, topo: withPos, mode, options, level, scenario: scenarioId };
-        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(s));
-      } catch {
-        /* storage unavailable */
-      }
-    }, 400);
+    applyTheme(document.documentElement, theme);
+    saveTheme(typeof localStorage !== 'undefined' ? localStorage : null, theme);
+  }, [theme]);
+
+  function applyPositions(t: Topology, p: Record<string, { x: number; y: number }>): Topology {
+    const c = structuredClone(t);
+    for (const d of c.devices) if (p[d.id]) Object.assign(d, p[d.id]);
+    return c;
+  }
+
+  /** The complete lab as it is now: topology, every device's configuration, notes, settings and timeline position. */
+  const currentLab = (): Lab => ({
+    format: LAB_FORMAT, version: LAB_VERSION, id: labInfo.id, name: labInfo.name, createdAt: labInfo.createdAt, updatedAt: new Date().toISOString(),
+    topo: applyPositions(topo, pos), notes, mode, options, level, scenario: scenarioId,
+    sim: { cursor, tables: state.tables }, exercise: labInfo.exercise,
+  });
+  const currentLabRef = useRef(currentLab);
+  currentLabRef.current = currentLab;
+
+  // Autosave the working lab (browser-local). Failures (private mode, full storage) are ignored.
+  useEffect(() => {
+    const t = setTimeout(() => library.saveCurrent(currentLabRef.current()), 500);
     return () => clearTimeout(t);
-  }, [topo, pos, mode, options, level, scenarioId]);
+  }, [topo, pos, notes, mode, options, level, scenarioId, labInfo, cursor, library]);
 
   // Playback
   useEffect(() => {
@@ -152,7 +180,7 @@ export default function App() {
     return () => clearTimeout(id);
   }, [playing, cursor, frames.length, interval, run]);
 
-  // Follow the current event: select the router where the packet / calculation is.
+  // Follow the current event: select the device where the packet / calculation is.
   useEffect(() => {
     if (!follow) return;
     const ev = frame.ev;
@@ -160,27 +188,51 @@ export default function App() {
     if (target && getDevice(state.topo, target)) setSel({ kind: 'device', id: target });
   }, [cursor, frames, follow]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep the ping form valid when devices change.
+  useEffect(() => {
+    if (!curTopo.devices.some((d) => d.id === pingForm.src && d.kind !== 'switch')) setPingForm(defaultPing(curTopo));
+  }, [curTopo]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const flash = (text: string, kind: 'info' | 'warn' | 'err' = 'info') => setNotice({ kind, text });
 
   const rebuild = useCallback((t: Topology, m: ViewMode, o: SimOptions, note?: string) => {
     const f = createTimeline(t, simModeOf(m), o);
     setFrames(f);
     // Static routing has no protocol to watch: open on the installed routes. Dynamic modes start at time 0.
-    setCursor(simModeOf(m) === 'static' ? f.length - 1 : 0);
+    setCursor(startCursor(m, f));
     setPlaying(false);
     setRun(null);
     if (note) flash(note, 'warn');
   }, []);
 
-  function applyPositions(t: Topology, p: Record<string, { x: number; y: number }>): Topology {
-    const c = structuredClone(t);
-    for (const d of c.devices) if (p[d.id]) Object.assign(d, p[d.id]);
-    return c;
-  }
+  // ------------------------------------------------------------ undo / redo (configuration and notes)
+
+  const remember = () => {
+    undoStack.current.push({ topo: applyPositions(topo, pos), notes: structuredClone(notes) });
+    if (undoStack.current.length > 60) undoStack.current.shift();
+    redoStack.current = [];
+    setDirty(true);
+    setHistoryTick((n) => n + 1);
+  };
+  const restore = (from: React.MutableRefObject<Snapshot[]>, to: React.MutableRefObject<Snapshot[]>, verb: string) => {
+    const snap = from.current.pop();
+    if (!snap) return;
+    to.current.push({ topo: applyPositions(topo, pos), notes: structuredClone(notes) });
+    setTopo(snap.topo);
+    setNotes(snap.notes);
+    setPos({});
+    setSel(null);
+    rebuild(snap.topo, mode, options, `${verb}. The simulation restarted from time 0 with the restored configuration.`);
+    setDirty(true);
+    setHistoryTick((n) => n + 1);
+  };
+  const undo = () => restore(undoStack, redoStack, 'Undone');
+  const redo = () => restore(redoStack, undoStack, 'Redone');
 
   // ------------------------------------------------------------ edits
 
   const structural = (t: Topology, desc: string) => {
+    remember();
     setTopo(t);
     rebuild(t, mode, options, `${desc}. The configuration changed, so the simulation restarted from time 0 with a new event sequence.`);
   };
@@ -190,6 +242,7 @@ export default function App() {
     const t = structuredClone(base);
     const l = t.links.find((x) => x.id === linkId);
     if (!l) return;
+    remember();
     Object.assign(l, patch);
     const name = `${deviceName(t, l.a.dev)}–${deviceName(t, l.b.dev)}`;
     const desc = patch.up === false ? `Link ${name} disabled` : patch.up === true ? `Link ${name} enabled` : `Link ${name} cost set to ${patch.cost}`;
@@ -207,6 +260,7 @@ export default function App() {
   };
 
   const onStatic = (t: Topology, desc: string) => {
+    remember();
     setTopo(t);
     if (mode !== 'static') return rebuild(t, mode, options);
     const nf = applyStaticConfigChange(frames, cursor, t, desc);
@@ -218,18 +272,36 @@ export default function App() {
 
   const onDelete = (s: Sel) => {
     if (!s) return;
-    const t = s.kind === 'device' ? removeDevice(curTopo, s.id) : removeLink(curTopo, s.id);
+    if (s.kind === 'note') {
+      remember();
+      setNotes(notes.filter((n) => n.id !== s.id));
+      setSel(null);
+      return;
+    }
+    const t = s.kind === 'device' ? removeDevice(applyPositions(curTopo, pos), s.id) : removeLink(applyPositions(curTopo, pos), s.id);
     setSel(null);
     structural(t, s.kind === 'device' ? `Deleted ${deviceName(curTopo, s.id)}` : 'Deleted a link');
   };
 
+  const addNote = (x: number, y: number) => {
+    remember();
+    const n: Note = { id: `note-${newId().slice(0, 8)}`, x: Math.round(x), y: Math.round(y), w: 220, h: 120, title: 'Note', text: 'Double-click to edit.\n- Use **bold** and bullets', shade: 'light' };
+    setNotes([...notes, n]);
+    setSel({ kind: 'note', id: n.id });
+    setDetailsTab('inspect');
+    setTool('select');
+  };
+
   const onBackground = (x: number, y: number) => {
-    if (tool === 'router' || tool === 'pc') {
-      const r = addDevice(applyPositions(curTopo, pos), tool, Math.round(x), Math.round(y));
+    if (tool === 'router' || tool === 'pc' || tool === 'switch') {
+      const sx = snap ? Math.round(x / GRID) * GRID : Math.round(x);
+      const sy = snap ? Math.round(y / GRID) * GRID : Math.round(y);
+      const r = addDevice(applyPositions(curTopo, pos), tool, sx, sy);
       setSel({ kind: 'device', id: r.id });
       structural(r.topo, `Added ${deviceName(r.topo, r.id)}`);
       return;
     }
+    if (tool === 'note') return addNote(x, y);
     setPendingLink(null);
     setSel(null);
     setSelectedKey(null);
@@ -251,19 +323,155 @@ export default function App() {
     if (tool === 'delete') return onDelete({ kind: 'device', id });
     setSel({ kind: 'device', id });
     setSelectedKey(null);
+    setDetailsTab('inspect');
   };
 
-  const onSelectLink = (s: Sel) => {
+  const onSelect = (s: Sel) => {
     if (tool === 'delete' && s) return onDelete(s);
     setSel(s);
+    if (s) setDetailsTab('inspect');
   };
 
-  // ------------------------------------------------------------ scenarios / files
+  const onMove = (id: string, x: number, y: number, done: boolean) => {
+    if (!gestureSnap.current) {
+      remember();
+      gestureSnap.current = true;
+    }
+    const px = snap && done ? Math.round(x / GRID) * GRID : x;
+    const py = snap && done ? Math.round(y / GRID) * GRID : y;
+    setPos((p) => ({ ...p, [id]: { x: px, y: py } }));
+    if (done) gestureSnap.current = false;
+  };
+
+  const onNoteChange = (n: Note, done: boolean) => {
+    if (!gestureSnap.current) {
+      remember();
+      gestureSnap.current = true;
+    }
+    const snapped = done && snap ? { ...n, x: Math.round(n.x / GRID) * GRID, y: Math.round(n.y / GRID) * GRID } : n;
+    setNotes((all) => all.map((x) => (x.id === n.id ? snapped : x)));
+    if (done) gestureSnap.current = false;
+  };
+
+  const editNote = (n: Note) => {
+    remember();
+    setNotes((all) => all.map((x) => (x.id === n.id ? n : x)));
+  };
+
+  // ------------------------------------------------------------ labs: new / open / save / import / share
+
+  /** Load a complete lab into the workspace. */
+  const loadLab = (lab: Lab, info: Partial<LabInfo> = {}, msg?: string) => {
+    setTopo(lab.topo);
+    setNotes(lab.notes);
+    setMode(lab.mode);
+    setOptions(mergeOptions(lab.options));
+    setLevel(lab.level);
+    setPos({});
+    setSel(null);
+    setScenarioId(lab.scenario ?? null);
+    setPredicted(null);
+    setLabInfo({ id: lab.id, name: lab.name, createdAt: lab.createdAt, inLibrary: !!library.load(lab.id), exercise: lab.exercise, ...info });
+    setDirty(false);
+    undoStack.current = [];
+    redoStack.current = [];
+    const f = createTimeline(lab.topo, simModeOf(lab.mode), mergeOptions(lab.options));
+    setFrames(f);
+    const c = typeof lab.sim?.cursor === 'number' ? clamp(lab.sim.cursor, 0, f.length - 1) : startCursor(lab.mode, f);
+    setCursor(c);
+    setPlaying(false);
+    setRun(null);
+    setPingForm(defaultPing(lab.topo));
+    setView(fitView(lab.topo, {}, lab.notes));
+    const same = !lab.sim?.tables || JSON.stringify(f[c].state.tables) === JSON.stringify(lab.sim.tables);
+    flash(`${msg ?? `Opened "${lab.name}".`}${same ? '' : ' Routing tables were recalculated from the saved configuration (the saved snapshot was taken mid-change).'}`);
+  };
+
+  /** Before replacing the work in progress, keep a copy in the library if it has unsaved changes. */
+  const keepCurrentWork = (): string => {
+    if (!dirty || topo.devices.length === 0) return '';
+    try {
+      const lab = currentLab();
+      const copy = labInfo.inLibrary ? lab : { ...lab, name: `${lab.name} (autosaved ${new Date().toLocaleString()})` };
+      library.save(copy);
+      return ` Your previous work was kept in Open Lab as "${copy.name}".`;
+    } catch {
+      return '';
+    }
+  };
+
+  const newLab = (kind: string) => {
+    const t = kind === 'three' ? threeRouter() : kind === 'five' ? fiveRouter() : kind === 'triangle' ? triangle() : kind === 'switch' ? switchedLan() : kind === 'loopback' ? loopbackLine() : { devices: [], links: [] };
+    const kept = keepCurrentWork();
+    const now = new Date().toISOString();
+    loadLab(
+      { format: LAB_FORMAT, version: LAB_VERSION, id: newId(), name: 'New lab', createdAt: now, updatedAt: now, topo: t, notes: [], mode: mode === 'compare' ? 'static' : mode, options, level },
+      { inLibrary: false },
+      `New lab created.${kind === 'empty' ? ' Use the device tools on the left to build a network.' : ''}${kept}`,
+    );
+    setScenarioId(null);
+  };
+
+  const saveToLibrary = (name?: string) => {
+    try {
+      const lab = { ...currentLab(), name: name ?? labInfo.name };
+      library.save(lab);
+      setLabInfo({ ...labInfo, name: lab.name, inLibrary: true });
+      setDirty(false);
+      flash(`Saved "${lab.name}" in this browser. Use Export Lab or Share Lab to move it to another computer.`);
+    } catch (e) {
+      flash(`Could not save: ${(e as Error).message}`, 'err');
+    }
+  };
+  const saveLab = () => (labInfo.inLibrary ? saveToLibrary() : setDialog('save'));
+
+  const importFile = async (file: File) => {
+    const r = parseLabText(await file.text(), file.name.replace(/\.(rvlab\.)?json$/i, ''));
+    if (!r.ok) return flash(`Could not open ${file.name}: ${r.errors.slice(0, 3).join(' ')}`, 'err');
+    const kept = keepCurrentWork();
+    setDialog(null);
+    loadLab({ ...r.lab, id: newId() }, { inLibrary: false }, `Imported "${r.lab.name}" from ${file.name}${r.migratedFrom ? ` (converted from the version ${r.migratedFrom} format)` : ''}. Use Save Lab to keep it in this browser.${kept}`);
+  };
+
+  const resetExercise = () => {
+    const ex = labInfo.exercise;
+    if (!ex) return;
+    remember();
+    const core: LabCore = coreOf(ex.original);
+    setTopo(core.topo);
+    setNotes(core.notes);
+    setMode(core.mode);
+    setOptions(mergeOptions(core.options));
+    setLevel(core.level);
+    setPos({});
+    setSel(null);
+    rebuild(core.topo, core.mode, mergeOptions(core.options), 'Lab reset to the original exercise configuration.');
+  };
+
+  // Open a lab shared by link (#lab=...): on start-up, or when a link is pasted into an open tab.
+  useEffect(() => {
+    const check = () => {
+      const code = labCodeFromHash(location.hash);
+      if (!code) return;
+      decodeLab(code).then((r) => {
+        history.replaceState(null, '', location.pathname + location.search);
+        if (!r.ok) return flash(`Could not open the shared lab: ${r.errors.join(' ')}`, 'err');
+        setDialog({ shared: r.lab });
+      });
+    };
+    check();
+    window.addEventListener('hashchange', check);
+    return () => window.removeEventListener('hashchange', check);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ------------------------------------------------------------ scenarios
 
   const loadScenario = (sc: Scenario) => {
     const t = sc.topology();
     const o = mergeOptions({ dv: { ...DEFAULT_OPTIONS.dv, ...(sc.dv ?? {}) } });
+    remember();
     setTopo(t);
+    setNotes([]);
     setMode(sc.mode);
     setOptions(o);
     setLevel(sc.level);
@@ -273,10 +481,10 @@ export default function App() {
     setUngated(false);
     setSel(sc.select ? { kind: 'device', id: sc.select } : null);
     setSelectedKey(null);
-    if (sc.ping) {
-      setPingSrc(sc.ping[0]);
-      setPingDst(sc.ping[1]);
-    }
+    setView(DEFAULT_VIEW);
+    setDetailsTab('scenario');
+    if (sc.ping) setPingForm({ src: sc.ping[0], srcIp: '', dstIp: t.devices.find((d) => d.id === sc.ping![1])?.ifaces[0]?.ip ?? '' });
+    else setPingForm(defaultPing(t));
     rebuild(t, sc.mode, o);
     flash(`Loaded scenario ${sc.num}: ${sc.title}.`);
   };
@@ -289,50 +497,17 @@ export default function App() {
     onLink(l.id, q.up !== undefined ? { up: q.up } : { cost: q.cost });
   };
 
-  const newTopology = (kind: string) => {
-    const t = kind === 'three' ? threeRouter() : kind === 'five' ? fiveRouter() : kind === 'triangle' ? triangle() : { devices: [], links: [] };
-    setScenarioId(null);
-    setPos({});
-    setSel(null);
-    setTopo(t);
-    rebuild(t, mode, options);
-    flash(kind === 'empty' ? 'Empty network. Use "+ Router", "+ PC" and "Link" to build one.' : 'New topology loaded.');
-  };
-
-  const save = () => {
-    const s: Saved = { format: 'routing-visual-lab', version: 1, topo: applyPositions(curTopo, pos), mode, options, level, scenario: scenarioId };
-    const blob = new Blob([JSON.stringify(s, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'routing-lab-topology.json';
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
-
-  const load = async (file: File) => {
-    try {
-      const s = JSON.parse(await file.text());
-      if (!isSaved(s)) throw new Error('This file is not a Routing Visual Lab topology.');
-      const o = mergeOptions(s.options);
-      setTopo(s.topo);
-      setMode(s.mode);
-      setOptions(o);
-      setLevel(s.level ?? 'beginner');
-      setPos({});
-      setScenarioId(null);
-      setSel(null);
-      rebuild(s.topo, s.mode, o);
-      flash(`Loaded ${file.name}.`);
-    } catch (e) {
-      flash(`Could not load file: ${(e as Error).message}`, 'err');
-    }
-  };
+  // ------------------------------------------------------------ ping runs
 
   const pingLabel = (n: number, total: number) => (total === Infinity ? `Ping ${n}` : total === 1 ? 'Ping' : `Ping ${n} of ${total}`);
+  const dstText = (f: PingForm) => {
+    const d = curTopo.devices.find((x) => x.ifaces.some((i) => i.ip === f.dstIp));
+    return d ? `${d.name} (${f.dstIp})` : f.dstIp;
+  };
 
-  /** Insert the next ping of the run right after frame `at`, using the routing tables at that moment. */
+  /** Insert the next ping of the run right after frame `at`, using the routing tables (and learned ARP/MAC entries) at that moment. */
   const sendNextPing = (r: PingRun, at: number, base: Frame[] = frames) => {
-    const { frames: pf, result } = buildPingFrames(base[at].state, r.src, r.dst, pingLabel(r.sent + 1, r.total));
+    const { frames: pf, result } = buildPingFrames(base[at].state, { src: r.form.src, srcIp: r.form.srcIp || undefined, dstIp: r.form.dstIp, seq: r.sent + 1 }, pingLabel(r.sent + 1, r.total));
     const next: PingRun = { ...r, sent: r.sent + 1, received: r.received + (result.success ? 1 : 0), endIndex: at + pf.length, waitAt: null };
     setFrames(insertFrames(base, at, pf));
     setRun(next);
@@ -341,15 +516,15 @@ export default function App() {
   };
 
   const runPing = () => {
-    if (!pingSrc || !pingDst || pingSrc === pingDst) return flash('Choose two different PCs.', 'err');
-    const r: PingRun = { src: pingSrc, dst: pingDst, total: pingCount === 0 ? Infinity : pingCount, sent: 0, received: 0, endIndex: cursor, waitAt: null };
+    if (!pingForm.src || !pingForm.dstIp) return flash('Choose a source device and a destination address.', 'err');
+    const r: PingRun = { form: pingForm, total: pingCount === 0 ? Infinity : pingCount, sent: 0, received: 0, endIndex: cursor, waitAt: null };
     sendNextPing(r, cursor);
     setPlaying(!oneAtATime);
   };
 
   /** End the run (Stop, or after the last ping) with a statistics event after the last ping. */
   const finishPing = (r: PingRun, target?: number) => {
-    const stats = pingStatsFrame(frames[r.endIndex].state, r.src, r.dst, r.sent, r.received);
+    const stats = pingStatsFrame(frames[r.endIndex].state, deviceName(curTopo, r.form.src), dstText(r.form), r.sent, r.received);
     setFrames(insertFrames(frames, r.endIndex, [stats]));
     setRun(null);
     // Without a target, show the statistics. Otherwise keep the requested event (shifted past the inserted one).
@@ -431,11 +606,18 @@ export default function App() {
 
   // ------------------------------------------------------------ keyboard
 
+  const undoRef = useRef(undo);
+  undoRef.current = undo;
+  const redoRef = useRef(redo);
+  redoRef.current = redo;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
+      const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) || (e.target as HTMLElement).isContentEditable;
       if (e.key === 'Escape') { setMaxed(null); setPresenting(false); }
-      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) || (e.target as HTMLElement).getAttribute('role') === 'separator' || mode === 'compare') return;
+      if (!typing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redoRef.current(); else undoRef.current(); return; }
+      if (!typing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redoRef.current(); return; }
+      if (typing || (e.target as HTMLElement).getAttribute('role') === 'separator' || mode === 'compare') return;
       if (e.key === 'ArrowRight') { setPlaying(false); advanceRef.current(); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { setPlaying(false); setCursor((c) => Math.max(c - 1, 0)); e.preventDefault(); }
       else if (e.key === ' ' && tag !== 'BUTTON') { if (!oneAtATime) setPlaying((p) => !p); e.preventDefault(); }
@@ -459,11 +641,11 @@ export default function App() {
     const confirmed = new Set(spf.steps.slice(0, limit).map((s) => s.selected));
     return Object.entries(spf.pred).filter(([n, p]) => p && confirmed.has(n)).map(([n, p]) => ({ linkId: p!.linkId, from: p!.node, to: n }));
   }, [state, selRouter, mode]);
-  const pcList = pcs(curTopo);
   const gated = teacher.on && teacher.gate && !!scenario && predicted === null && !ungated;
   const ctx = { frames, cursor, state, topo: curTopo, selected: selRouter };
   const errors = issues.filter((i) => i.severity === 'error');
   const warnings = issues.filter((i) => i.severity === 'warning');
+  const selNote = sel?.kind === 'note' ? notes.find((n) => n.id === sel.id) : undefined;
 
   // ------------------------------------------------------------ panel sections (the same elements are placed by every layout)
 
@@ -512,6 +694,13 @@ export default function App() {
   const mv = { onMoveStart: startMove, onMoveKey: moveKey };
   swapPanelsRef.current = swapPanels;
 
+  const zoomBy = (f: number) => {
+    const k = clamp(view.k * f, 0.3, 3);
+    const cx = VIEW_W / 2;
+    const cy = VIEW_H / 2;
+    setView({ k, x: cx - ((cx - view.x) * k) / view.k, y: cy - ((cy - view.y) * k) / view.k });
+  };
+
   const controls = (
     <Controls
       cursor={cursor} total={frames.length} playing={playing} speed={speed} playDisabled={oneAtATime}
@@ -525,34 +714,63 @@ export default function App() {
     />
   );
 
+  const TOOLS: [Tool, string, string, string][] = [
+    ['select', '↖', 'Select', 'Select, move and pan'],
+    ['router', 'R', 'Router', 'Router'],
+    ['pc', 'PC', 'PC', 'PC'],
+    ['switch', 'SW', 'Switch', 'Unmanaged Layer 2 switch'],
+    ['link', '⟷', 'Link', 'Connection tool: Ethernet link'],
+    ['note', '✎', 'Note', 'Note: click the canvas to add one'],
+    ['delete', '🗑', 'Delete', 'Delete devices, links or notes'],
+  ];
+
   const canvasSection = (
     <section className="card canvas-wrap panel" aria-label="Network canvas">
-      <div className="toolbar" role="toolbar" aria-label="Editing tools">
-        {([['select', '↖ Select / drag'], ['router', '+ Router'], ['pc', '+ PC'], ['link', '⟷ Link'], ['delete', '🗑 Delete']] as const).map(([t, l]) => (
-          <button key={t} className="btn small" aria-pressed={tool === t} onClick={() => { setTool(t); setPendingLink(null); }}>{l}</button>
-        ))}
+      <div className="toolbar" role="toolbar" aria-label="Canvas options">
         <label className="small"><input type="checkbox" checked={showAddr} onChange={(e) => setShowAddr(e.target.checked)} /> Addresses</label>
+        <label className="small"><input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} /> Grid</label>
+        <label className="small"><input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} /> Snap</label>
         <label className="small"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Follow events</label>
-        <span className="hint">{tool === 'router' || tool === 'pc' ? 'Click empty space to place it.' : tool === 'link' ? (pendingLink ? 'Click the second device.' : 'Click the first device.') : tool === 'delete' ? 'Click a device or link to delete it.' : 'Click to inspect · drag to move'}</span>
+        <span className="zoom-group" role="group" aria-label="Zoom">
+          <button className="btn small icon" onClick={() => zoomBy(1 / 1.25)} aria-label="Zoom out" title="Zoom out">−</button>
+          <span className="small zoom-pct">{Math.round(view.k * 100)}%</span>
+          <button className="btn small icon" onClick={() => zoomBy(1.25)} aria-label="Zoom in" title="Zoom in">+</button>
+          <button className="btn small" onClick={() => setView(fitView(curTopo, pos, notes))} title="Fit the whole network on screen">Fit</button>
+        </span>
+        <span className="hint">{tool === 'router' || tool === 'pc' || tool === 'switch' ? 'Click empty space to place it.' : tool === 'note' ? 'Click where the note should go.' : tool === 'link' ? (pendingLink ? 'Click the second device.' : 'Click the first device.') : tool === 'delete' ? 'Click a device, link or note to delete it.' : 'Drag devices · drag empty space to pan · Ctrl+scroll to zoom'}</span>
         {!presenting && (
           <PanelButtons id="canvas" maxed={maxed} onMax={setMaxed} {...mv}
             extra={<button className="btn small" onClick={startPresenting} title="Full-screen topology for classroom presentation">⛶ Present</button>} />
         )}
       </div>
-      <div className="canvas-area">
-        <Canvas
-          topo={curTopo} pos={pos} mode={mode} options={options} selected={sel} tool={tool} pendingLinkFrom={pendingLink}
-          anim={mode === 'compare' ? undefined : frame.ev.anim} animKey={cursor} duration={Math.min(1200, interval * 0.75)} reducedMotion={reducedMotion}
-          routePath={routePath} sptPath={sptPath} focus={mode === 'compare' ? [] : frame.ev.routers ?? []} showAddresses={showAddr}
-          onSelect={onSelectLink} onBackground={onBackground} onDevice={onDevice} onMove={(id, x, y) => setPos((p) => ({ ...p, [id]: { x, y } }))}
-        />
+      <div className="canvas-body">
+        <div className="tool-palette" role="toolbar" aria-label="Network devices and tools" aria-orientation="vertical">
+          {TOOLS.map(([t, icon, short, label]) => (
+            <button key={t} className="tool-btn" aria-pressed={tool === t} onClick={() => { setTool(t); setPendingLink(null); }} title={label} aria-label={label}>
+              <span className="tool-icon" aria-hidden>{icon}</span>
+              <span className="tool-label">{short}</span>
+            </button>
+          ))}
+        </div>
+        <div className="canvas-area">
+          <Canvas
+            topo={curTopo} pos={pos} notes={notes} mode={mode} options={options} selected={sel} tool={tool} pendingLinkFrom={pendingLink}
+            anim={mode === 'compare' ? undefined : frame.ev.anim} animKey={cursor} duration={Math.min(1200, interval * 0.75)} reducedMotion={reducedMotion}
+            routePath={routePath} sptPath={sptPath} focus={mode === 'compare' ? [] : frame.ev.routers ?? []} showAddresses={showAddr} showGrid={showGrid}
+            view={view} onView={setView}
+            onSelect={onSelect} onBackground={onBackground} onDevice={onDevice} onMove={onMove}
+            onNoteChange={onNoteChange}
+            onNoteOpen={(id) => { setSel({ kind: 'note', id }); setDetailsTab('inspect'); if (layout.detailsCollapsed) patchLayout({ detailsCollapsed: false }); setTimeout(() => (document.getElementById('note-text') as HTMLTextAreaElement | null)?.focus(), 50); }}
+            onPacketClick={() => { setPlaying(false); setDetailsTab('packet'); if (layout.detailsCollapsed) patchLayout({ detailsCollapsed: false }); }}
+          />
+        </div>
       </div>
     </section>
   );
 
   const simSection = (
     <section className="panel plain" aria-label={mode === 'compare' ? 'Comparison' : 'Simulation controls and explanation'}>
-      <PanelBar title={mode === 'compare' ? 'Comparison' : 'Controls & explanation'}>
+      <PanelBar title={mode === 'compare' ? 'Comparison' : 'Simulation controls'}>
         <PanelButtons id="sim" maxed={maxed} onMax={setMaxed} {...mv} />
       </PanelBar>
       <div className="panel-body">
@@ -562,28 +780,11 @@ export default function App() {
           <>
             <section className="card stack" aria-label="Simulation and ping controls">
               {controls}
+              <PingTool topo={curTopo} form={pingForm} setForm={setPingForm} count={pingCount} setCount={setPingCount} running={run}
+                onRun={runPing} onStop={() => { if (run) { setPlaying(false); finishPing(run, cursor); } }} stats={lastStats} />
               <div className="row">
-                <strong>Ping:</strong>
-                <label>from <select value={pingSrc} onChange={(e) => setPingSrc(e.target.value)} aria-label="Source PC">{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-                <label>to <select value={pingDst} onChange={(e) => setPingDst(e.target.value)} aria-label="Destination PC">{pcList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-                <label>count <select value={pingCount} onChange={(e) => setPingCount(Number(e.target.value))} aria-label="Number of pings" disabled={!!run}>
-                  <option value={1}>1</option>
-                  <option value={3}>3</option>
-                  <option value={0}>∞ (until Stop)</option>
-                </select></label>
-                {run ? (
-                  <button className="btn danger" onClick={() => { setPlaying(false); finishPing(run, cursor); }}>■ Stop ping</button>
-                ) : (
-                  <button className="btn primary" onClick={runPing} disabled={pcList.length < 2}>✉ Run ping</button>
-                )}
-                {lastStats && (
-                  <span className="pill" aria-live="polite">
-                    {run ? (run.total === Infinity ? `Sent ${lastStats.sent}` : `Sent ${lastStats.sent} of ${run.total}`) : `Last run: sent ${lastStats.sent}`} · received {lastStats.received} · lost {lastStats.sent - lastStats.received}
-                  </span>
-                )}
-              </div>
-              <div className="small muted">
-                Each ping is one echo request + one echo reply, using the routing tables at that moment. Pings are sent one after another; if routing events are still pending, one happens between pings.
+                <button className="btn small" onClick={() => { setFrames(clearL2(frames, cursor)); setCursor(cursor + 1); setRun(null); }} title="Empty every ARP cache and switch MAC table">Clear ARP &amp; MAC tables</button>
+                <span className="small muted">Learned so far: {Object.values(state.l2.arp).reduce((n, t) => n + Object.keys(t).length, 0)} ARP entries, {Object.values(state.l2.mac).reduce((n, t) => n + t.length, 0)} MAC table entries.</span>
               </div>
             </section>
             <Explain frame={frame} index={cursor} total={frames.length} level={level} gated={gated} hideValues={teacher.on && teacher.hideValues} onUngate={() => setUngated(true)} />
@@ -602,32 +803,50 @@ export default function App() {
     />
   );
 
+  const showScenarioTab = !!scenario && (scenario.mode === 'compare') === (mode === 'compare');
+  const tabs: [DetailsTab, string][] = mode === 'compare'
+    ? [['inspect', 'About'], ...(showScenarioTab ? ([['scenario', 'Scenario']] as [DetailsTab, string][]) : [])]
+    : [['inspect', selNote ? 'Note' : 'Inspector'], ['packet', 'Packet'], ...(showScenarioTab ? ([['scenario', 'Scenario']] as [DetailsTab, string][]) : []), ['settings', 'Settings']];
+  const activeTab = tabs.some(([t]) => t === detailsTab) ? detailsTab : 'inspect';
   const detailsCollapsed = layout.detailsCollapsed && maxed !== 'details' && mode !== 'compare';
   const detailsSection = (
-    <section className="panel plain" aria-label="Learning activity and inspector">
-      <PanelBar title={mode === 'compare' ? 'About the comparison' : scenario ? 'Learning activity & inspector' : 'Settings & inspector'}>
+    <section className="panel plain" aria-label="Inspector">
+      <PanelBar title="Inspector">
         <PanelButtons id="details" maxed={maxed} onMax={setMaxed} {...mv} collapsed={detailsCollapsed} onCollapse={mode === 'compare' ? undefined : () => patchLayout({ detailsCollapsed: !layout.detailsCollapsed })} />
       </PanelBar>
       {!detailsCollapsed && (
-        <div className="panel-body">
-          {scenario && (scenario.mode === 'compare') === (mode === 'compare') && (
-            <ScenarioPanel sc={scenario} ctx={ctx} predicted={predicted} onPredict={setPredicted} onReset={() => loadScenario(scenario)} onQuick={quickAction} teacher={teacher.on && teacher.gate} />
-          )}
-          {mode !== 'compare' && <SettingsPanel mode={mode} options={options} level={level} topo={state.topo} onOptions={(o) => { setOptions(o); rebuild(topo, mode, o, 'Protocol settings changed: the simulation restarted from time 0.'); }} />}
-          {mode !== 'compare' && (
-            <Inspector
-              state={state} frames={frames} cursor={cursor} level={level} options={options} sel={sel} hideValues={teacher.on && teacher.hideValues}
-              changes={frame.ev.changes ?? []} pingHop={frame.ev.ping} selectedKey={selectedKey} onSelectKey={setSelectedKey}
-              onStructural={structural} onLink={onLink} onStatic={onStatic} onDelete={onDelete}
-            />
-          )}
-          {mode === 'compare' && (
-            <section className="card">
-              <h2>How to read the comparison</h2>
-              <p className="small">Each column is a real simulation of the same topology. Static routing uses whatever static routes are configured (switch to Static mode to edit them). Pick a link to fail and compare how each approach responds, and whether a person has to fix anything.</p>
-            </section>
-          )}
-        </div>
+        <>
+          <div className="tabs details-tabs" role="tablist" aria-label="Inspector sections">
+            {tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={activeTab === k} onClick={() => setDetailsTab(k)}>{l}{k === 'packet' && frame.ev.packet ? ' •' : ''}</button>)}
+          </div>
+          <div className="panel-body">
+            {activeTab === 'scenario' && scenario && (
+              <ScenarioPanel sc={scenario} ctx={ctx} predicted={predicted} onPredict={setPredicted} onReset={() => loadScenario(scenario)} onQuick={quickAction} teacher={teacher.on && teacher.gate} />
+            )}
+            {activeTab === 'settings' && mode !== 'compare' && (
+              <SettingsPanel mode={mode} options={options} level={level} topo={state.topo} onOptions={(o) => { setOptions(o); setDirty(true); rebuild(topo, mode, o, 'Protocol settings changed: the simulation restarted from time 0.'); }} />
+            )}
+            {activeTab === 'packet' && mode !== 'compare' && <PacketInspector frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); if (run) finishPing(run, i); else setCursor(i); }} />}
+            {activeTab === 'inspect' && selNote && (
+              <NotePanel note={selNote} topo={curTopo} onChange={editNote}
+                onDuplicate={() => { remember(); const c = { ...selNote, id: `note-${newId().slice(0, 8)}`, x: selNote.x + 24, y: selNote.y + 24, locked: undefined }; setNotes([...notes, c]); setSel({ kind: 'note', id: c.id }); }}
+                onDelete={() => onDelete({ kind: 'note', id: selNote.id })} />
+            )}
+            {activeTab === 'inspect' && !selNote && mode !== 'compare' && (
+              <Inspector
+                state={state} frames={frames} cursor={cursor} level={level} options={options} sel={sel} hideValues={teacher.on && teacher.hideValues}
+                changes={frame.ev.changes ?? []} pingHop={frame.ev.ping} selectedKey={selectedKey} onSelectKey={setSelectedKey}
+                onStructural={structural} onLink={onLink} onStatic={onStatic} onDelete={onDelete}
+              />
+            )}
+            {activeTab === 'inspect' && !selNote && mode === 'compare' && (
+              <section className="card">
+                <h2>How to read the comparison</h2>
+                <p className="small">Each column is a real simulation of the same topology. Static routing uses whatever static routes are configured (switch to Static mode to edit them). Pick a link to fail and compare how each approach responds, and whether a person has to fix anything.</p>
+              </section>
+            )}
+          </div>
+        </>
       )}
     </section>
   );
@@ -667,16 +886,45 @@ export default function App() {
 
   const switchMode = (m: ViewMode) => {
     setMode(m);
+    setDirty(true);
     rebuild(topo, m, options);
   };
+
+  const themeLabel = theme === 'system' ? 'Auto' : theme === 'light' ? 'Light' : 'Dark';
+  const exercise = labInfo.exercise;
 
   return (
     <div className={`app ${wide && !presenting ? 'app-wide' : ''} ${presenting ? 'app-present' : ''}`}>
       {!presenting && <header className="topbar">
         <div className="brand">
-          <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth="2"><circle cx="5" cy="12" r="3" /><circle cx="19" cy="5" r="3" /><circle cx="19" cy="19" r="3" /><path d="M8 11 16 6M8 13l8 5" /></svg>
-          Routing Visual Lab
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth="2"><circle cx="5" cy="12" r="3" /><circle cx="19" cy="5" r="3" /><circle cx="19" cy="19" r="3" /><path d="M8 11 16 6M8 13l8 5" /></svg>
+          <span>Routing Visual Lab</span>
         </div>
+        <div className="lab-name" title={labInfo.inLibrary ? 'Saved in this browser' : 'Not saved in the library yet'}>
+          <span className="small muted">Lab</span> <strong>{labInfo.name}</strong>{dirty && <span className="dirty" aria-label="unsaved changes"> •</span>}
+          {exercise?.studentMode && <span className="pill">student exercise</span>}
+        </div>
+        <div className="group lab-actions" role="toolbar" aria-label="Lab">
+          <select aria-label="New lab" value="" onChange={(e) => e.target.value && newLab(e.target.value)} title="Start a new lab">
+            <option value="">＋ New Lab…</option>
+            <option value="three">3 routers (simple)</option>
+            <option value="five">5 routers (alternative paths)</option>
+            <option value="triangle">Triangle (weighted)</option>
+            <option value="switch">Switched LAN (2 routers, switch, 3 PCs)</option>
+            <option value="loopback">R1–R2–R3 with loopbacks</option>
+            <option value="empty">Empty canvas</option>
+          </select>
+          <button className="btn" onClick={() => setDialog('open')} title="Open a saved lab or import a lab file">📂 Open Lab</button>
+          <button className="btn" onClick={saveLab} title="Save this lab in this browser">💾 Save Lab</button>
+          <button className="btn" onClick={() => setDialog('share')} title="Share with students: lab file, link or QR code">⇪ Share Lab</button>
+          <button className="btn" onClick={() => fileRef.current?.click()} title="Import a lab file (.json)">⬆ Import</button>
+          <button className="btn" onClick={() => downloadLab(currentLab())} title="Export this lab as a JSON file">⬇ Export</button>
+          <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ''; }} />
+          <button className="btn icon" onClick={undo} disabled={!undoStack.current.length} title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+          <button className="btn icon" onClick={redo} disabled={!redoStack.current.length} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
+          <button className="btn" onClick={() => setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system')} title="Theme: automatic, light or dark" aria-label={`Theme: ${themeLabel}. Click to change.`}>◐ {themeLabel}</button>
+        </div>
+        <div className="break" />
         <div className="seg" role="group" aria-label="Routing mode">
           {([['static', 'Static'], ['dv', 'Distance Vector'], ['ls', 'Link State'], ['compare', 'Compare']] as const).map(([m, l]) => (
             <button key={m} aria-pressed={mode === m} onClick={() => switchMode(m)}>{l}</button>
@@ -701,16 +949,6 @@ export default function App() {
           <button className="btn" aria-pressed={reducedMotion} onClick={() => setReducedMotion(!reducedMotion)} title="Turn packet movement on or off">Reduce motion</button>
           <button className="btn" onClick={() => { resetLayout(); setMaxed(null); }} title="Restore the default panel sizes">▦ Reset layout</button>
           <button className="btn" onClick={() => setShowAssumptions(true)}>ⓘ Model assumptions</button>
-          <select aria-label="New topology" value="" onChange={(e) => e.target.value && newTopology(e.target.value)}>
-            <option value="">New…</option>
-            <option value="three">3 routers (simple)</option>
-            <option value="five">5 routers (alternative paths)</option>
-            <option value="triangle">Triangle (weighted)</option>
-            <option value="empty">Empty canvas</option>
-          </select>
-          <button className="btn" onClick={save} title="Download this topology as JSON">⬇ Save</button>
-          <button className="btn" onClick={() => fileRef.current?.click()} title="Load a topology JSON file">⬆ Load</button>
-          <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) load(f); e.target.value = ''; }} />
         </div>
       </header>}
 
@@ -722,6 +960,17 @@ export default function App() {
             <label><input type="checkbox" checked={teacher.oneAtATime} onChange={(e) => { setTeacher({ ...teacher, oneAtATime: e.target.checked }); setPlaying(false); }} /> Reveal one event at a time</label>
             <label><input type="checkbox" checked={teacher.hideValues} onChange={(e) => setTeacher({ ...teacher, hideValues: e.target.checked })} /> Hide next hops &amp; costs (click "?" to reveal)</label>
             {scenario && <button className="btn small" onClick={() => loadScenario(scenario)}>↺ Reset scenario now</button>}
+          </div>
+        </div>
+      )}
+
+      {exercise && !presenting && (
+        <div className="card exercise-bar" role="region" aria-label="Student exercise">
+          <div className="row">
+            <strong>📝 Exercise{exercise.studentMode ? ' (Student Exercise Mode)' : ''}</strong>
+            {exercise.instructions && <span className="grow">{exercise.instructions}</span>}
+            <button className="btn small" onClick={() => setDialog('check')}>✔ Check connectivity</button>
+            <button className="btn small" onClick={resetExercise} title="Restore the configuration exactly as it was shared">↺ Reset Lab</button>
           </div>
         </div>
       )}
@@ -781,6 +1030,25 @@ export default function App() {
         </div>
       )}
       {showAssumptions && <Assumptions onClose={() => setShowAssumptions(false)} />}
+      {dialog === 'open' && <OpenLabDialog library={library} currentId={labInfo.id} onClose={() => setDialog(null)} onImport={importFile}
+        onOpen={(lab) => { const kept = lab.id === labInfo.id ? '' : keepCurrentWork(); setDialog(null); loadLab(lab, { inLibrary: true }, `Opened "${lab.name}".${kept}`); }} />}
+      {dialog === 'share' && <ShareDialog lab={currentLab()} onClose={() => setDialog(null)} />}
+      {dialog === 'save' && <NameDialog title="Save lab" initial={labInfo.name === 'My lab' || labInfo.name === 'New lab' ? '' : labInfo.name} action="Save" onClose={() => setDialog(null)} onSubmit={(name) => { setDialog(null); saveToLibrary(name); }} />}
+      {dialog === 'check' && <ConnectivityCheck state={state} onClose={() => setDialog(null)} />}
+      {dialog && typeof dialog === 'object' && (
+        <div className="modal-back" role="dialog" aria-modal="true" aria-label="Open shared lab">
+          <div className="modal">
+            <h2>Open shared lab?</h2>
+            <p>Someone shared <strong>{dialog.shared.name}</strong> with you ({dialog.shared.topo.devices.length} devices, {dialog.shared.notes.length} notes{dialog.shared.exercise?.studentMode ? ', Student Exercise Mode' : ''}).</p>
+            {dialog.shared.exercise?.instructions && <p className="banner info">{dialog.shared.exercise.instructions}</p>}
+            <p className="small muted">It opens as your own copy. {dirty ? 'Your current work will be kept in Open Lab.' : ''}</p>
+            <div className="row">
+              <button className="btn primary" autoFocus onClick={() => { const kept = keepCurrentWork(); const lab = { ...dialog.shared, id: newId() }; setDialog(null); loadLab(lab, { inLibrary: false }, `Opened the shared lab "${lab.name}". Use Save Lab to keep it in this browser.${kept}`); }}>Open shared lab</button>
+              <button className="btn" onClick={() => setDialog(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

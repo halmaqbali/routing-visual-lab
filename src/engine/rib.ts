@@ -21,6 +21,8 @@ export interface Route {
   unreachable?: boolean;
   staticId?: string;
   note?: string;
+  /** Distance vector: when the current next hop last confirmed this route (for the route timeout). */
+  refreshedAt?: number;
 }
 
 export type Table = Route[];

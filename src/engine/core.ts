@@ -1,5 +1,6 @@
 // Deterministic event queue helpers shared by the protocol engines.
-import { deviceName } from '../model/topology';
+import { deviceName, getDevice, routerNeighbors, segmentOf } from '../model/topology';
+import type { Topology } from '../model/types';
 import type { Frame, Pending, SimEvent, SimState } from './types';
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -33,3 +34,27 @@ export function frame(state: SimState, ev: Omit<SimEvent, 'time'>): Frame {
 }
 
 export const nm = (s: SimState, id: string) => deviceName(s.topo, id);
+
+/** Devices crossed between two routers on an adjacency (for animating through switches). */
+export function adjPath(topo: Topology, from: string, key: string): string[] | undefined {
+  return routerNeighbors(topo, from).find((n) => n.key === key)?.path;
+}
+
+/** Routers affected when links change: the routers on the links and every router on a switch they touch. */
+export function affectedRouters(topos: Topology[], linkIds: string[]): string[] {
+  const out = new Set<string>();
+  for (const topo of topos) {
+    for (const id of linkIds) {
+      const l = topo.links.find((x) => x.id === id);
+      if (!l) continue;
+      for (const end of [l.a, l.b]) {
+        const d = getDevice(topo, end.dev);
+        if (!d) continue;
+        if (d.kind === 'router') out.add(d.id);
+        if (d.kind === 'switch')
+          for (const port of d.ifaces) for (const ep of segmentOf(topo, d.id, port.id).endpoints) if (ep.dev.kind === 'router') out.add(ep.dev.id);
+      }
+    }
+  }
+  return [...out].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}

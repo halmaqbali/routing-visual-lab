@@ -212,16 +212,19 @@ export function Legend() {
     <section className="card" aria-label="Legend">
       <h2>Legend</h2>
       <div className="legend">
-        <div className="item">{sw(<g><rect x={-15} y={-10} width={30} height={20} rx={3} fill="var(--data)" /><path d="M-15 -10 L0 2 L15 -10" fill="none" stroke="#fff" strokeWidth={1.5} /></g>)} Data packet (ping) — envelope labelled REQ/REP with its current TTL</div>
-        <div className="item">{sw(<g><rect x={-11} y={-11} width={22} height={22} rx={5} fill="var(--dv)" /><text y={4} textAnchor="middle" fontSize={9} fontWeight={800} fill="#fff">DV</text></g>)} Distance-vector update — square "DV"</div>
-        <div className="item">{sw(<g><rect x={-9} y={-9} width={18} height={18} transform="rotate(45)" fill="var(--lsa)" /></g>)} Link-state advertisement — diamond</div>
-        <div className="item">{sw(<circle r={9} fill="var(--hello)" />)} Hello (neighbour discovery) — circle "H"</div>
-        <div className="item">{sw(<g><line x1={-20} y1={0} x2={20} y2={0} stroke="var(--fail)" strokeWidth={3} strokeDasharray="6 4" /><circle r={7} fill="var(--panel)" stroke="var(--fail)" strokeWidth={2} /><path d="M-3 -3 L3 3 M3 -3 L-3 3" stroke="var(--fail)" strokeWidth={2} /></g>)} Failed / disabled link — dashed + ✕ "DOWN"</div>
-        <div className="item">{sw(<line x1={-18} y1={0} x2={14} y2={0} stroke="var(--route)" strokeWidth={7} strokeOpacity={0.55} markerEnd="url(#arrow-route)" />)} Selected route path — thick arrow</div>
-        <div className="item">{sw(<line x1={-18} y1={0} x2={18} y2={0} stroke="var(--route)" strokeWidth={6} strokeOpacity={0.4} strokeDasharray="2 6" strokeLinecap="round" />)} Shortest-path tree (link state) — dotted</div>
+        <div className="item">{sw(<g><rect x={-15} y={-10} width={30} height={20} rx={3} fill="var(--fg)" /><path d="M-15 -10 L0 2 L15 -10" fill="none" stroke="var(--bg)" strokeWidth={1.5} /></g>)} Data packet (ICMP ping) — solid envelope, shows TTL</div>
+        <div className="item">{sw(<g><rect x={-15} y={-10} width={30} height={20} rx={3} fill="var(--node)" stroke="var(--fg)" strokeWidth={1.6} strokeDasharray="4 3" /><path d="M-15 -10 L0 2 L15 -10" fill="none" stroke="var(--fg)" strokeWidth={1.3} /></g>)} ARP frame — dashed envelope</div>
+        <div className="item">{sw(<g><rect x={-11} y={-11} width={22} height={22} rx={4} fill="var(--node)" stroke="var(--fg)" strokeWidth={2} /><text y={4} textAnchor="middle" fontSize={8} fontWeight={800} fill="var(--fg)">DV</text></g>)} Distance-vector / RIP update — square "DV"</div>
+        <div className="item">{sw(<g><rect x={-9} y={-9} width={18} height={18} transform="rotate(45)" fill="var(--mid)" stroke="var(--fg)" strokeWidth={1.5} /></g>)} Link-state advertisement — grey diamond</div>
+        <div className="item">{sw(<g><circle r={9} fill="var(--node)" stroke="var(--fg)" strokeWidth={2} /><text y={3.5} textAnchor="middle" fontSize={9} fontWeight={800} fill="var(--fg)">H</text></g>)} Hello (neighbour discovery) — circle "H"</div>
+        <div className="item">{sw(<g>{[-12, 0, 12].map((x) => <rect key={x} x={x - 5} y={-4} width={10} height={8} rx={1.5} fill="var(--fg)" />)}</g>)} Switch flooding — several copies leave at once</div>
+        <div className="item">{sw(<g><line x1={-20} y1={0} x2={20} y2={0} stroke="var(--fail)" strokeWidth={3} strokeDasharray="6 4" /><circle r={7} fill="var(--node)" stroke="var(--fail)" strokeWidth={2} /><path d="M-3 -3 L3 3 M3 -3 L-3 3" stroke="var(--fail)" strokeWidth={2} /></g>)} Failed / disabled link — dashed + ✕ "DOWN"</div>
+        <div className="item">{sw(<line x1={-18} y1={0} x2={14} y2={0} stroke="var(--fg)" strokeWidth={7} strokeOpacity={0.35} markerEnd="url(#arrow-route)" />)} Selected route path — thick arrow</div>
+        <div className="item">{sw(<line x1={-18} y1={0} x2={18} y2={0} stroke="var(--fg)" strokeWidth={6} strokeOpacity={0.25} strokeDasharray="2 6" strokeLinecap="round" />)} Shortest-path tree (link state) — dotted</div>
         <div className="item">{sw(<g><polygon points="-6,-12 6,-12 12,-6 12,6 6,12 -6,12 -12,6 -12,-6" fill="var(--fail)" /><path d="M-5 -5 L5 5 M5 -5 L-5 5" stroke="#fff" strokeWidth={2.5} /></g>)} Packet drop — octagon ✕ "DROP"</div>
-        <div className="item">{sw(<circle r={10} fill="none" stroke="var(--focus)" strokeWidth={2.5} strokeDasharray="4 3" />)} Router involved in the current event</div>
-        <div className="item"><span className="badge new">NEW</span><span className="badge chg">CHANGED</span> Row changed in this event</div>
+        <div className="item">{sw(<circle r={10} fill="none" stroke="var(--fg)" strokeWidth={2} strokeDasharray="4 3" />)} Device involved in the current event</div>
+        <div className="item">{sw(<g><circle cx={-10} r={8} fill="var(--node)" stroke="var(--fg)" strokeWidth={2} /><rect x={2} y={-7} width={18} height={14} rx={2} fill="var(--node)" stroke="var(--fg)" strokeWidth={2} /></g>)} Router (circle) · Switch (wide box) · PC (screen)</div>
+        <div className="item"><span className="badge new">NEW</span><span className="badge chg">CHANGED</span> Row changed in this event · click a packet to inspect it</div>
       </div>
     </section>
   );
@@ -235,13 +238,24 @@ export function Assumptions({ onClose }: { onClose: () => void }) {
         <h3>General</h3>
         <ul>
           <li>No real packets are sent. Everything is simulated in your browser and is deterministic: the same configuration always gives the same events.</li>
-          <li>Each PC connects directly to one router interface (no switches). ARP is modelled only as "does a device on this link own that address?".</li>
+          <li>PCs connect to a router or to an unmanaged switch. A direct link or a group of devices joined by switches forms one Layer 2 segment, which must use one subnet.</li>
           <li>Links are point-to-point and symmetric (same cost in both directions). A disabled link takes both interfaces down; both routers notice immediately.</li>
           <li>Time is measured in abstract time units. Every protocol message takes 1 time unit to cross a link.</li>
-          <li>Ping uses a teaching default TTL of 16. Routers decrease TTL by 1 before forwarding and drop the packet when it reaches 0 (ICMP Time Exceeded is not sent back).</li>
+          <li>Ping uses a teaching default TTL of 16 (routers and PCs originate with the same value). Routers decrease TTL by 1 before forwarding and drop the packet when it reaches 0.</li>
+          <li>Ping outcomes: <em>success</em> needs both the echo request and the echo reply. A router with no route reports <em>destination unreachable</em>; TTL 0 reports <em>TTL expired in transit</em>; a lost reply is a <em>timeout</em>. The ICMP error messages themselves are not animated.</li>
+          <li>Pings are sent one after another (not on a 1-second timer). Packet sizes are realistic for ICMP, ARP and RIPv2; OSPF sizes are approximate; the generic distance-vector protocol has no real size.</li>
+          <li>Packet Inspector fields are simulated, not captured. Checksums are not computed and fields such as the ICMP identifier use fixed values (marked "simulated").</li>
           <li>Ping count: 1, 3 (default) or continuous until Stop. Pings are sent one after another, not on a real 1-second timer. If routing events are still pending, exactly one routing event happens between two pings, so a continuous ping shows the network converging.</li>
           <li>Equal-cost paths: one route is kept (no load sharing). Ties are broken by name order.</li>
           <li>Each mode uses its own routes only: static routes are ignored in distance-vector and link-state modes (no redistribution).</li>
+        </ul>
+        <h3>Layer 2: ARP and switches</h3>
+        <ul>
+          <li>Every interface has a stable, locally administered MAC address (02:00:…). Before sending, a device needs the next hop's MAC: it uses its ARP cache, or broadcasts an ARP request and waits for the unicast reply. Both sides learn each other's entry.</li>
+          <li>ARP cache entries do not expire in this model; use "Clear ARP &amp; MAC tables" to watch them being learned again.</li>
+          <li>Unmanaged switches learn source MAC addresses per port, forward known unicast to one port, and flood broadcast and unknown unicast to all other ports. MAC entries age out after 300 time units and are removed when a port's link goes down.</li>
+          <li>No Spanning Tree Protocol, VLANs or full-duplex/collision details. Loops between switches are rejected by validation.</li>
+          <li>Routers on the same switched LAN become neighbours (multi-access) for RIP and link state; the cost used is the router's own link cost.</li>
         </ul>
         <h3>Static routing</h3>
         <ul>
@@ -258,7 +272,7 @@ export function Assumptions({ onClose }: { onClose: () => void }) {
           <li>Periodic updates every 30 time units (labelled "30 s" in the RIP profile); all routers send at the same moment, processed in a fixed order.</li>
           <li>A route from the current next hop is always accepted (even if worse); from another neighbour only if strictly better.</li>
           <li>Triggered updates send only the changed routes, immediately. When a link comes up, both ends send their full table to the new neighbour (if triggered updates are on).</li>
-          <li>RIP timers for route timeout (180 s), garbage collection (120 s) and hold-down are NOT modelled. Unreachable routes stay in the table marked ∞.</li>
+          <li>Route timeout is modelled: a learned route not re-advertised by its next hop for more than 180 time units becomes unreachable (this is how a neighbour that disappears behind a switch is detected). RIP's garbage-collection (120 s) and hold-down timers are NOT modelled; unreachable routes stay in the table marked ∞.</li>
           <li>Cost changes take effect when the next advertisement arrives.</li>
           <li>Convergence is declared when a full periodic round changes nothing.</li>
         </ul>
@@ -271,6 +285,12 @@ export function Assumptions({ onClose }: { onClose: () => void }) {
           <li>Database synchronisation when a new adjacency forms: each side sends all LSAs it has.</li>
           <li>SPF runs 5 time units after the router's last database change. Links are used only if both ends report them (two-way check).</li>
           <li>Route cost to a network = SPF cost to the router that advertises it (networks themselves add 0).</li>
+        </ul>
+        <h3>Saving and sharing</h3>
+        <ul>
+          <li>Labs are saved in this browser (Save Lab, autosave). There is no server: to move a lab to another computer, export the file or create a share link.</li>
+          <li>A share link contains the whole lab, compressed, after the # in the address. The # part is never sent to the web server, so nothing is uploaded or stored online. Large labs give long links; QR codes hold about 2,800 characters.</li>
+          <li>Routing tables are not stored as truth: they are recalculated from the saved configuration (the result is deterministic). Pings and other data packets in the timeline are not saved.</li>
         </ul>
         <h3>Comparison</h3>
         <ul>

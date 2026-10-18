@@ -64,18 +64,20 @@ export function Explain({ frame, index, total, level, gated, hideValues, onUngat
                 <table className="tbl">
                   <caption className="sr-only">Forwarding decision</caption>
                   <tbody>
-                    <tr><th scope="row">Packet</th><td>ICMP echo {hop.phase} · source {hop.srcIp} → destination <strong className="mono">{hop.dstIp}</strong></td></tr>
+                    <tr><th scope="row">Packet</th><td>{hop.packet.protocol === 'ARP' ? `ARP (needed before the ICMP echo ${hop.phase} can be sent)` : `ICMP echo ${hop.phase}`} · IP {hop.srcIp} → <strong className="mono">{hop.dstIp}</strong></td></tr>
+                    {hop.srcMac && <tr><th scope="row">Ethernet frame (L2)</th><td className="mono">{hop.srcMac} → {hop.dstMac}</td></tr>}
+                    {hop.macDecision && <tr><th scope="row">Switch decision</th><td>learned {hop.macDecision.learned} on {hop.macDecision.port}; <strong>{hop.macDecision.decision}</strong>{hop.macDecision.outPorts.length ? ` → ${hop.macDecision.outPorts.join(', ')}` : ''}</td></tr>}
                     {hop.candidates && <tr><th scope="row">Matching routes</th><td className="mono">{hop.candidates.length ? hop.candidates.map(routeKey).join(', ') : 'none'}</td></tr>}
                     {hop.candidates !== undefined && <tr><th scope="row">Selected route</th><td className="mono">{hop.chosen ? routeKey(hop.chosen) : '— (no match)'}</td></tr>}
                     <tr><th scope="row">Why</th><td>{hop.why}</td></tr>
                     {hop.nextHopIp && <tr><th scope="row">Next hop</th><td className="mono">{hideValues ? '?' : hop.nextHopIp}{hop.toDevice ? ` (${n(hop.toDevice)})` : ''}</td></tr>}
                     {hop.outIfaceName && <tr><th scope="row">Outgoing interface</th><td className="mono">{hideValues ? '?' : hop.outIfaceName}</td></tr>}
-                    <tr><th scope="row">TTL</th><td>{hop.ttlIn === hop.ttlOut ? `${hop.ttlIn} (hosts do not change TTL)` : `${hop.ttlIn} → ${hop.ttlOut}`}</td></tr>
-                    <tr><th scope="row">Next action</th><td><strong style={{ color: hop.action === 'drop' ? 'var(--fail)' : undefined }}>{hop.action === 'drop' ? `DROP — ${hop.failure}` : hop.action === 'receive' ? 'Received by destination' : hop.action === 'deliver' ? 'Deliver on connected network' : 'Forward to next hop'}</strong></td></tr>
+                    {hop.layer === 3 && <tr><th scope="row">TTL</th><td>{hop.ttlIn === hop.ttlOut ? `${hop.ttlIn} (not changed here)` : `${hop.ttlIn} → ${hop.ttlOut}`}</td></tr>}
+                    <tr><th scope="row">Next action</th><td><strong style={{ color: hop.action === 'drop' ? 'var(--fail)' : undefined }}>{({ drop: `DROP — ${hop.failure}`, receive: 'Received by destination', deliver: 'Deliver on connected network', forward: 'Forward to next hop', send: 'Send', 'arp-request': 'Broadcast ARP request, wait for reply', 'arp-reply': 'Send unicast ARP reply', 'arp-learn': 'Store in ARP cache, then send the packet', 'switch-forward': 'Forward frame out of one port', 'switch-flood': 'Flood frame out of all other ports', 'switch-filter': 'Filter (drop) frame' } as Record<string, string>)[hop.action] ?? hop.action}</strong></td></tr>
                   </tbody>
                 </table>
               </div>
-              {hop.nextHopIp && hop.action !== 'drop' && <p className="small muted">The next-hop address only tells this device which neighbour to hand the packet to. The destination IP in the packet stays {hop.dstIp} the whole way.</p>}
+              {hop.nextHopIp && hop.action !== 'drop' && hop.layer === 3 && <p className="small muted">The next-hop address only tells this device which neighbour to hand the packet to. The destination IP in the packet stays {hop.dstIp} the whole way; only the Ethernet (MAC) addresses change at each hop.</p>}
             </div>
           )}
           {ev.dv && <DvCalcTable topo={topo} d={ev.dv} infinity={frame.state.dv?.infinity ?? 16} hide={hideValues} />}

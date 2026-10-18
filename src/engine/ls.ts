@@ -3,9 +3,10 @@
 import { cidr, networkOf } from '../model/ip';
 import { getDevice, routerNeighbors, routers } from '../model/topology';
 import type { Topology } from '../model/types';
-import { cloneState, frame, nm, popNext, push } from './core';
+import { adjPath, affectedRouters, cloneState, frame, nm, popNext, push } from './core';
 import { AD, connectedRoutes, diffTable, routeKey, sortTable, type Route, type Table } from './rib';
 import type { Frame, LsRouterState, Lsa, SimState, SpfRelax, SpfResult, SpfStep } from './types';
+import { lsuView, macFn, ospfHelloView } from './packets';
 
 export const SPF_DELAY = 5;
 
@@ -38,9 +39,9 @@ export function lsInit(base: SimState): Frame[] {
   const seen = new Set<string>();
   for (const r of routers(s.topo))
     for (const nb of routerNeighbors(s.topo, r.id))
-      if (!seen.has(nb.link.id)) {
-        seen.add(nb.link.id);
-        push(s, { t: 0, type: 'hello', linkId: nb.link.id });
+      if (!seen.has(nb.key)) {
+        seen.add(nb.key);
+        push(s, { t: 0, type: 'hello', key: nb.key, a: r.id, b: nb.router });
       }
   for (const r of routers(s.topo)) push(s, { t: 0, type: 'describe', router: r.id });
   for (const r of routers(s.topo)) push(s, { t: 0, type: 'originate', router: r.id, reason: 'initial' });
@@ -50,9 +51,6 @@ export function lsInit(base: SimState): Frame[] {
   })];
 }
 
-function linkOf(topo: Topology, id: string) {
-  return topo.links.find((l) => l.id === id);
-}
 
 function flood(s: SimState, from: string, lsa: Lsa, except?: string) {
   for (const n of lsr(s, from).neighbors) if (n.router !== except) push(s, { t: s.time + 1, type: 'lsa-deliver', from, to: n.router, linkId: n.linkId, lsa });
@@ -136,15 +134,14 @@ export function spfRoutes(topo: Topology, root: string, spf: SpfResult, lsdb: Re
   const connKeys = new Set(conn.map(routeKey));
   const best = new Map<string, Route>();
   const origins = Object.keys(spf.dist).filter((o) => o !== root).sort((a, b) => spf.dist[a] - spf.dist[b] || byName(a, b));
-  const rootDev = getDevice(topo, root)!;
+  const rootNbrs = routerNeighbors(topo, root);
   for (const o of origins) {
     const fh = spf.firstHop[o];
     if (!fh) continue;
-    const link = linkOf(topo, fh.linkId);
-    if (!link) continue;
-    const myEnd = link.a.dev === root ? link.a : link.b;
-    const theirEnd = link.a.dev === root ? link.b : link.a;
-    const nhIp = getDevice(topo, theirEnd.dev)?.ifaces.find((i) => i.id === theirEnd.iface)?.ip ?? null;
+    const adj = rootNbrs.find((n) => n.key === fh.linkId);
+    if (!adj) continue;
+    const myEnd = { iface: adj.localIface.id };
+    const nhIp = adj.remoteIface.ip;
     for (const st of lsdb[o]?.stubs ?? []) {
       const k = cidr(st.network, st.prefix);
       if (connKeys.has(k) || best.has(k)) continue;
@@ -160,7 +157,6 @@ export function spfRoutes(topo: Topology, root: string, spf: SpfResult, lsdb: Re
       });
     }
   }
-  void rootDev;
   return sortTable([...conn, ...best.values()]);
 }
 
@@ -177,21 +173,26 @@ export function lsStep(prev: SimState): Frame[] {
   s.spfView = null;
 
   if (p.type === 'hello') {
-    const link = linkOf(s.topo, p.linkId);
-    if (!link) return [];
-    const [a, b] = [link.a.dev, link.b.dev];
+    const { a, b } = p;
+    let cost = 1;
+    let viaSwitch = false;
     for (const r of [a, b]) {
-      const nb = routerNeighbors(s.topo, r).find((n) => n.link.id === p.linkId);
+      const nb = routerNeighbors(s.topo, r).find((n) => n.key === p.key);
       if (!nb) continue;
+      if (r === a) {
+        cost = nb.cost;
+        viaSwitch = nb.path.length > 2;
+      }
       const st = lsr(s, r);
-      st.neighbors = st.neighbors.filter((n) => n.linkId !== p.linkId);
-      st.neighbors.push({ router: nb.router, linkId: nb.link.id, cost: nb.cost, localIface: nb.localIface.id, remoteIp: nb.remoteIface.ip });
+      st.neighbors = st.neighbors.filter((n) => n.linkId !== p.key);
+      st.neighbors.push({ router: nb.router, linkId: nb.key, cost: nb.cost, localIface: nb.localIface.id, remoteIp: nb.remoteIface.ip });
       st.neighbors.sort((x, y) => byName(x.router, y.router));
     }
     return [frame(s, {
       kind: 'ls-hello', category: 'lsa', title: `Hello: ${nm(s, a)} ↔ ${nm(s, b)} become neighbours`, routers: [a, b],
-      explain: `${nm(s, a)} and ${nm(s, b)} exchange Hello messages on their shared link and see each other, so they become neighbours. Link cost: ${link.cost}. (Simplified: no hello/dead timers, no DR election.)`,
-      anim: { from: a, to: b, linkId: p.linkId, style: 'hello', label: 'Hello' },
+      explain: `${nm(s, a)} and ${nm(s, b)} exchange Hello messages ${viaSwitch ? 'across the switch (they are on the same LAN)' : 'on their shared link'} and see each other, so they become neighbours. Interface cost: ${cost}. (Simplified: no hello/dead timers, no DR election.)`,
+      anim: { from: a, to: b, linkId: p.key, style: 'hello', label: 'Hello', path: adjPath(s.topo, a, p.key) },
+      packet: ospfHelloView(s.topo, a, b, p.key, macFn(s.topo)),
     })];
   }
 
@@ -221,12 +222,11 @@ export function lsStep(prev: SimState): Frame[] {
   if (p.type === 'lsa-deliver') {
     const fromN = nm(s, p.from);
     const toN = nm(s, p.to);
-    const link = linkOf(s.topo, p.linkId);
-    if (!link || !link.up) {
+    if (!routerNeighbors(s.topo, p.to).some((n) => n.key === p.linkId && n.router === p.from)) {
       return [frame(s, {
         kind: 'ls-lost', category: 'lsa', title: `LSA ${fromN} → ${toN} lost`, routers: [p.to],
         explain: `The link is down, so ${toN} never receives this LSA.`,
-        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', drop: true, label: 'LSA' },
+        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', drop: true, label: 'LSA', path: adjPath(prev.topo, p.from, p.linkId) },
       })];
     }
     const st = lsr(s, p.to);
@@ -241,15 +241,17 @@ export function lsStep(prev: SimState): Frame[] {
         kind: 'ls-flood', category: 'lsa', title: `${toN} receives ${owner}'s LSA #${p.lsa.seq}`, routers: [p.to],
         explain: `${toN} gets ${owner}'s LSA from ${fromN}. It is ${have ? `newer than the stored #${have.seq}` : 'new'}, so ${toN} stores it (its database now holds ${total} LSA${total > 1 ? 's' : ''}) and floods an unchanged copy to its other neighbours. The LSA is NOT modified: every router gets the same original description.`,
         detail: [lsaText(s, p.lsa)],
-        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', label: `LSA ${owner}` },
+        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', label: `LSA ${owner}`, path: adjPath(s.topo, p.from, p.linkId) },
         lsa: { lsa: p.lsa, installed: true },
+        packet: lsuView(s.topo, p.from, p.to, p.linkId, p.lsa, macFn(s.topo)),
       })];
     }
     return [frame(s, {
       kind: 'ls-dup', category: 'lsa', title: `${toN} discards a duplicate of ${owner}'s LSA`, routers: [p.to],
       explain: `${toN} already has ${owner}'s LSA #${have.seq}, so the copy from ${fromN} is not new. It is discarded and NOT flooded again — this is what stops flooding from going on forever.`,
-      anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', label: `LSA ${owner}` },
+      anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', label: `LSA ${owner}`, path: adjPath(s.topo, p.from, p.linkId) },
       lsa: { lsa: p.lsa, installed: false },
+      packet: lsuView(s.topo, p.from, p.to, p.linkId, p.lsa, macFn(s.topo)),
     })];
   }
 
@@ -305,16 +307,12 @@ export function lsLinkChange(prev: SimState, newTopo: Topology, linkIds: string[
   const oldTopo = s.topo;
   s.topo = newTopo;
   s.done = false;
-  const affected = new Set<string>();
-  for (const id of linkIds) {
-    const l = newTopo.links.find((x) => x.id === id) ?? oldTopo.links.find((x) => x.id === id);
-    if (l) for (const e of [l.a.dev, l.b.dev]) if (getDevice(newTopo, e)?.kind === 'router') affected.add(e);
-  }
-  for (const r of [...affected].sort(byName)) {
+  const affected = affectedRouters([oldTopo, newTopo], linkIds);
+  for (const r of affected) {
     const st = lsr(s, r);
     const nbs = routerNeighbors(newTopo, r);
     const before = st.neighbors;
-    st.neighbors = nbs.map((nb) => ({ router: nb.router, linkId: nb.link.id, cost: nb.cost, localIface: nb.localIface.id, remoteIp: nb.remoteIface.ip }));
+    st.neighbors = nbs.map((nb) => ({ router: nb.router, linkId: nb.key, cost: nb.cost, localIface: nb.localIface.id, remoteIp: nb.remoteIface.ip }));
     const lost = before.filter((b) => !st.neighbors.some((n) => n.linkId === b.linkId));
     const gained = st.neighbors.filter((n) => !before.some((b) => b.linkId === n.linkId));
     // Routes out of interfaces that are no longer up are removed immediately.

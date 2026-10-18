@@ -26,7 +26,7 @@ describe('timeline state restoration', () => {
     const last = f.length - 1;
     const { frames, result } = insertPing(f, last, 'pc1', 'pc2');
     expect(result.success).toBe(true);
-    expect(frames.slice(last + 1).every((x) => x.state === f[last].state)).toBe(true);
+    expect(frames.slice(last + 1).every((x) => x.state.tables === f[last].state.tables && x.state.ls === f[last].state.ls)).toBe(true);
     expect(frames.slice(last + 1).every((x) => x.ev.category === 'data')).toBe(true);
   });
 });
@@ -36,18 +36,18 @@ describe('ping runs', () => {
     const { buildPingFrames, pingStatsFrame } = await import('../src/engine/simulation');
     const f = createTimeline(threeRouter(), 'static', opts());
     const at = f.at(-1)!.state;
-    const p = buildPingFrames(at, 'pc1', 'pc2', 'Ping 2 of 3');
-    expect(p.frames[0].ev.title).toBe('Ping 2 of 3: PC1 → PC2');
+    const p = buildPingFrames(at, { src: 'pc1', dstIp: '192.168.3.10' }, 'Ping 2 of 3');
+    expect(p.frames[0].ev.title).toBe('Ping 2 of 3: PC1 → PC2 (192.168.3.10)');
     expect(p.result.success).toBe(false); // no static routes configured
     expect(p.frames.at(-1)!.ev.kind).toBe('ping-result');
-    const s = pingStatsFrame(at, 'pc1', 'pc2', 3, 1);
+    const s = pingStatsFrame(at, 'PC1', 'PC2', 3, 1);
     expect(s.ev.title).toBe('Ping statistics: 3 sent, 1 received, 67% loss');
     expect(s.state).toBe(at);
   });
   it('pings sent at different points of a DV run see different routing tables', async () => {
     const { buildPingFrames } = await import('../src/engine/simulation');
     const f = createTimeline(threeRouter(), 'dv', opts());
-    expect(buildPingFrames(f[0].state, 'pc1', 'pc2').result.success).toBe(false);
-    expect(buildPingFrames(f.at(-1)!.state, 'pc1', 'pc2').result.success).toBe(true);
+    expect(buildPingFrames(f[0].state, { src: 'pc1', dstIp: '192.168.3.10' }).result.success).toBe(false);
+    expect(buildPingFrames(f.at(-1)!.state, { src: 'pc1', dstIp: '192.168.3.10' }).result.success).toBe(true);
   });
 });

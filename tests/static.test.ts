@@ -47,7 +47,7 @@ describe('static routing and ping', () => {
     expect(p.success).toBe(true);
     expect(p.requestPath).toEqual(['pc1', 'r1', 'r2', 'r3', 'pc2']);
     expect(p.replyPath).toEqual(['pc2', 'r3', 'r2', 'r1', 'pc1']);
-    const r2 = p.steps.find((s) => s.at === 'r2' && s.phase === 'request')!;
+    const r2 = p.steps.find((s) => s.at === 'r2' && s.phase === 'request' && s.layer === 3)!;
     expect(r2.ttlIn).toBe(15);
     expect(r2.ttlOut).toBe(14);
     expect(r2.nextHopIp).toBe('10.0.23.3');

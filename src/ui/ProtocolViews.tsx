@@ -3,6 +3,8 @@ import { cidr } from '../model/ip';
 import { deviceName, routerNeighbors } from '../model/topology';
 import type { Topology } from '../model/types';
 import { buildAdverts } from '../engine/dv';
+import { lsLabel } from '../engine/ls';
+import { routerId } from '../engine/packets';
 import type { DvDetail, Frame, LsRouterState, SimState, SpfResult } from '../engine/types';
 
 const inf = (m: number, i: number) => (m >= i ? '∞' : String(m));
@@ -81,7 +83,7 @@ export function DvRouterView({ state, router, frames, cursor }: { state: SimStat
 }
 
 export function SpfTable({ topo, spf, step }: { topo: Topology; spf: SpfResult; step: number }) {
-  const n = (id: string) => deviceName(topo, id);
+  const n = (id: string) => lsLabel(topo, id);
   const shown = spf.steps.slice(0, step);
   const cur = shown[shown.length - 1];
   const nodes = Object.keys(spf.dist).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
@@ -135,36 +137,64 @@ export function SpfTable({ topo, spf, step }: { topo: Topology; spf: SpfResult; 
 }
 
 export function LsRouterView({ state, router }: { state: SimState; router: string }) {
-  const [tab, setTab] = useState<'nbr' | 'lsdb' | 'topo' | 'spf'>('spf');
+  const [tab, setTab] = useState<'nbr' | 'lsdb' | 'topo' | 'spf'>('nbr');
   const topo = state.topo;
-  const n = (id: string) => deviceName(topo, id);
+  const n = (id: string) => lsLabel(topo, id);
   const st: LsRouterState | undefined = state.ls?.routers[router];
   if (!st) return <p className="muted">No link-state information.</p>;
   const view = state.spfView?.router === router ? state.spfView.step : st.spf?.steps.length ?? 0;
-  const lsas = Object.values(st.lsdb).sort((a, b) => a.origin.localeCompare(b.origin, undefined, { numeric: true }));
+  const lsas = Object.values(st.lsdb).sort((a, b) => (a.kind === 'network' ? 1 : 0) - (b.kind === 'network' ? 1 : 0) || a.origin.localeCompare(b.origin, undefined, { numeric: true }));
+  const ifname = (id: string) => topo.devices.find((d) => d.id === router)?.ifaces.find((i) => i.id === id)?.name ?? id;
+  const role = (who: string, ifaceId: string) => {
+    const info = st.ifaces?.[ifaceId];
+    if (!info?.multiAccess) return 'point-to-point';
+    return who === info.dr ? 'DR' : who === info.bdr ? 'BDR' : 'DROTHER';
+  };
+  const lans = Object.entries(st.ifaces ?? {}).filter(([, i]) => i.multiAccess && i.dr);
   return (
     <div className="stack">
+      <p className="small muted">Router ID <strong className="mono">{routerId(topo, router)}</strong> · area 0 · OSPF-style model</p>
       <div className="tabs" role="tablist">
         {([['nbr', 'Neighbours'], ['lsdb', `LSDB (${lsas.length})`], ['topo', 'Topology view'], ['spf', 'SPF / Dijkstra']] as const).map(([k, l]) => (
           <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}>{l}</button>
         ))}
       </div>
       {tab === 'nbr' && (
-        st.neighbors.length ? (
-          <table className="tbl"><thead><tr><th>Neighbour</th><th>Address</th><th>Cost</th></tr></thead>
-            <tbody>{st.neighbors.map((x) => <tr key={x.linkId}><td>{n(x.router)}</td><td className="mono">{x.remoteIp}</td><td>{x.cost}</td></tr>)}</tbody>
-          </table>
-        ) : <p className="muted small">No neighbours discovered yet.</p>
+        <div className="stack small">
+          {st.neighbors.length ? (
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead><tr><th>Neighbour</th><th>Router ID</th><th>State</th><th>Role</th><th>Interface</th></tr></thead>
+                <tbody>{st.neighbors.map((x) => (
+                  <tr key={x.linkId} className={x.state === 'Full' ? '' : 'match'}>
+                    <td>{n(x.router)}</td><td className="mono">{x.rid}</td>
+                    <td><strong>{x.state}</strong></td><td>{role(x.router, x.localIface)}</td><td>{ifname(x.localIface)} · cost {x.cost}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ) : <p className="muted">No neighbours discovered yet.</p>}
+          {lans.map(([id, i]) => (
+            <p key={id}>On {ifname(id)} (LAN): DR <strong>{n(i.dr!)}</strong>{i.bdr ? <>, BDR <strong>{n(i.bdr)}</strong></> : null}. This router is <strong>{role(router, id)}</strong>.</p>
+          ))}
+          <p className="muted">States: Init (heard them) → 2-Way (they hear us) → ExStart/Exchange (DBD) → Loading (LSR/LSU) → Full. On a LAN, DROTHERs stay 2-Way with each other.</p>
+        </div>
       )}
       {tab === 'lsdb' && (
         <div className="stack small">
-          <p className="muted">Each LSA is an unchanged copy of one router's own description of its links.</p>
+          <p className="muted">Each LSA is an unchanged copy of one router's description (Type 1 Router-LSA) or of a LAN made by its DR (Type 2 Network-LSA).</p>
           {lsas.length === 0 && <p className="muted">Empty.</p>}
           {lsas.map((l) => (
-            <div key={l.origin} className="card" style={{ padding: '0.4rem 0.6rem' }}>
-              <strong>{n(l.origin)}</strong> <span className="pill">seq #{l.seq}</span>
-              <div>Links: {l.links.map((x) => `${n(x.to)} (cost ${x.cost})`).join(', ') || 'none'}</div>
-              <div className="mono">Networks: {l.stubs.map((x) => cidr(x.network, x.prefix)).join(', ')}</div>
+            <div key={l.id ?? l.origin} className="card" style={{ padding: '0.4rem 0.6rem' }}>
+              <strong>{l.kind === 'network' ? n(l.id!) : n(l.origin)}</strong> <span className="pill">{l.kind === 'network' ? 'Type 2 Network' : 'Type 1 Router'}</span> <span className="pill">seq #{l.seq}</span>
+              {l.kind === 'network' ? (
+                <div>Attached routers: {(l.attached ?? []).map(n).join(', ')}</div>
+              ) : (
+                <>
+                  <div>Links: {l.links.map((x) => `${n(x.to)} (cost ${x.cost})`).join(', ') || 'no full adjacencies'}</div>
+                  <div className="mono">Stub networks: {l.stubs.map((x) => cidr(x.network, x.prefix)).join(', ') || 'none'}</div>
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -173,8 +203,8 @@ export function LsRouterView({ state, router }: { state: SimState; router: strin
         <div className="small">
           {st.spf ? (
             <>
-              <p className="muted">The map {n(router)} built from its LSDB (links confirmed by both ends):</p>
-              <ul>{st.spf.edges.map((e) => <li key={e.linkId}>{n(e.a)} — {n(e.b)}: cost {e.cost}</li>)}</ul>
+              <p className="muted">The map {n(router)} built from its LSDB (point-to-point links confirmed by both ends; LANs as their own nodes):</p>
+              <ul>{st.spf.edges.map((e) => <li key={`${e.a}-${e.linkId}`}>{n(e.a)} — {n(e.b)}: cost {e.cost}</li>)}</ul>
             </>
           ) : <p className="muted">SPF has not run yet, so the map has not been built.</p>}
         </div>

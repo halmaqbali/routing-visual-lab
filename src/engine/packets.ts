@@ -14,7 +14,7 @@ export function macFn(topo: Topology) {
   };
 }
 
-export type Proto = 'ICMP' | 'ARP' | 'RIPv2' | 'DV (teaching)' | 'OSPF Hello' | 'OSPF LSU';
+export type Proto = 'ICMP' | 'ARP' | 'RIPv2' | 'DV (teaching)' | 'OSPF Hello' | 'OSPF DBD' | 'OSPF LSR' | 'OSPF LSU';
 
 export interface Field {
   name: string;
@@ -201,28 +201,61 @@ export function dvView(topo: Topology, from: string, to: string, key: string, ad
   };
 }
 
-export function ospfHelloView(topo: Topology, a: string, b: string, key: string, macOfIface: (dev: string, iface: string) => string): PacketView {
-  const nb = adjacency(topo, a, b, key);
-  const srcIp = nb?.localIface.ip ?? '';
-  const srcMac = nb ? macOfIface(a, nb.localIface.id) : '';
+/** An OSPF Hello sent out of one interface to 224.0.0.5: lists the neighbours already heard, plus the DR/BDR. */
+export function ospfHelloView(topo: Topology, router: string, ifaceId: string, seen: string[], dr: string | undefined, bdr: string | undefined, macOfIface: (dev: string, iface: string) => string, next?: string): PacketView {
+  const ifc = getIface(topo, router, ifaceId);
+  const srcIp = ifc?.ip ?? '';
+  const srcMac = macOfIface(router, ifaceId);
+  const rid = (id?: string) => (id ? `${routerId(topo, id)} (${deviceName(topo, id)})` : '0.0.0.0 (none yet)');
   return {
-    protocol: 'OSPF Hello', info: `Hello from ${routerId(topo, a)} (router ID)`, origin: a, target: b, at: a, next: b,
-    outIface: nb?.localIface.name, srcMac, dstMac: '01:00:5e:00:00:05', srcIp, dstIp: '224.0.0.5', ttl: 1,
-    sizeNote: 'Approximate: the simulator models the Hello exchange, not the exact OSPF byte layout.',
+    protocol: 'OSPF Hello', info: `Hello from ${routerId(topo, router)}, neighbours seen: ${seen.length ? seen.map((x) => deviceName(topo, x)).join(', ') : 'none'}`,
+    origin: router, at: router, next, outIface: ifc?.name, srcMac, dstMac: '01:00:5e:00:00:05', srcIp, dstIp: '224.0.0.5', ttl: 1,
+    sizeBytes: 14 + 20 + 44 + 4 * seen.length, sizeNote: '14 (Ethernet) + 20 (IPv4) + 24 (OSPF header) + 20 (Hello fields) + 4 per neighbour listed.',
     layers: [
       ETH('01:00:5e:00:00:05', srcMac, '0x0800 (IPv4)'),
-      IPV4(srcIp, '224.0.0.5', 1, '89 (OSPF)', 64),
-      { name: 'OSPF (simplified teaching model)', layer: 7, fields: [
-        { name: 'Version', value: '2' }, { name: 'Message type', value: '1 (Hello)' },
-        { name: 'Router ID', value: routerId(topo, a) }, { name: 'Area ID', value: '0.0.0.0', simulated: true },
-        { name: 'Hello / Dead interval', value: '10 s / 40 s (timers not modelled)', simulated: true },
-        { name: 'Neighbour seen', value: routerId(topo, b) },
+      IPV4(srcIp, '224.0.0.5', 1, '89 (OSPF)', 20 + 44 + 4 * seen.length),
+      { name: 'OSPF Hello (OSPFv2, area 0)', layer: 7, fields: [
+        { name: 'Version / Type', value: '2 / 1 (Hello)' },
+        { name: 'Router ID', value: routerId(topo, router) },
+        { name: 'Area ID', value: '0.0.0.0 (backbone)' },
+        { name: 'Network mask', value: ifc ? maskString(ifc.prefix) : '' },
+        { name: 'Hello interval / Dead interval', value: '10 s / 40 s' },
+        { name: 'Router priority', value: '1' },
+        { name: 'Designated router (DR)', value: rid(dr) },
+        { name: 'Backup DR (BDR)', value: rid(bdr) },
+        ...(seen.length ? seen.map((x) => ({ name: 'Active neighbour', value: rid(x) })) : [{ name: 'Active neighbours', value: 'none yet' }]),
+        { name: 'Authentication / checksum', value: 'none / not computed', simulated: true },
       ] },
     ],
     notes: [
-      'Hello messages discover neighbours. Two routers become neighbours when each sees the other in its Hellos (two-way).',
-      'Simplified: no DR/BDR election, no timers, single area. This is OSPF-inspired, not a full OSPF implementation.',
+      'Hellos find neighbours and keep them alive. A router that finds its OWN router ID in a neighbour\'s Hello knows the neighbour hears it too: the neighbour becomes 2-Way.',
+      'If no Hello arrives for the Dead interval (40 s), the neighbour is declared down.',
     ],
+  };
+}
+
+/** Database Description (DBD), Link State Request (LSR): adjacency-forming messages between two routers. */
+export function ospfMsgView(topo: Topology, from: string, to: string, key: string, type: 'DBD' | 'LSR', items: string[], info: string, notes: string[], macOfIface: (dev: string, iface: string) => string): PacketView {
+  const nb = adjacency(topo, from, to, key);
+  const srcIp = nb?.localIface.ip ?? '';
+  const dstIp = nb?.remoteIface.ip ?? '';
+  const srcMac = nb ? macOfIface(from, nb.localIface.id) : '';
+  const dstMac = nb ? macOfIface(to, nb.remoteIface.id) : '';
+  return {
+    protocol: type === 'DBD' ? 'OSPF DBD' : 'OSPF LSR', info, origin: from, target: to, at: from, next: to,
+    outIface: nb?.localIface.name, srcMac, dstMac, srcIp, dstIp, ttl: 1,
+    sizeNote: type === 'DBD' ? 'Approximate: 24 (OSPF header) + 8 + 20 per LSA header.' : 'Approximate: 24 (OSPF header) + 12 per LSA requested.',
+    layers: [
+      ETH(dstMac, srcMac, '0x0800 (IPv4)'),
+      IPV4(srcIp, dstIp, 1, '89 (OSPF)', 64),
+      { name: type === 'DBD' ? 'OSPF Database Description' : 'OSPF Link State Request', layer: 7, fields: [
+        { name: 'Version / Type', value: type === 'DBD' ? '2 / 2 (Database Description)' : '2 / 3 (Link State Request)' },
+        { name: 'Router ID', value: routerId(topo, from) },
+        ...(items.length ? items.map((x) => ({ name: type === 'DBD' ? 'LSA header' : 'Requested LSA', value: x })) : [{ name: type === 'DBD' ? 'LSA headers' : 'Requested LSAs', value: 'none' }]),
+        { name: 'DD sequence / flags', value: 'not modelled', simulated: true },
+      ] },
+    ],
+    notes,
   };
 }
 
@@ -232,7 +265,7 @@ export function lsuView(topo: Topology, from: string, to: string, key: string, l
   const srcIp = nb?.localIface.ip ?? '';
   const srcMac = nb ? macOfIface(from, nb.localIface.id) : '';
   return {
-    protocol: 'OSPF LSU', info: `LS Update: Router-LSA of ${routerId(topo, lsa.origin)}, seq #${lsa.seq}`, origin: lsa.origin, at: from, next: to,
+    protocol: 'OSPF LSU', info: `LS Update: ${lsa.kind === 'network' ? 'Network-LSA' : 'Router-LSA'} of ${routerId(topo, lsa.origin)}, seq #${lsa.seq}`, origin: lsa.origin, at: from, next: to,
     outIface: nb?.localIface.name, inIface: back?.localIface.name, srcMac, dstMac: '01:00:5e:00:00:05', srcIp, dstIp: '224.0.0.5', ttl: 1,
     sizeNote: 'Approximate: LSA encoding is simplified.',
     layers: [
@@ -241,17 +274,20 @@ export function lsuView(topo: Topology, from: string, to: string, key: string, l
       { name: 'OSPF Link State Update (simplified)', layer: 7, fields: [
         { name: 'Message type', value: '4 (Link State Update)' },
         { name: 'Sent by (router ID)', value: routerId(topo, from) },
-        { name: 'LSA type', value: '1 (Router-LSA)' },
+        { name: 'LSA type', value: lsa.kind === 'network' ? '2 (Network-LSA, made by the DR)' : '1 (Router-LSA)' },
+        ...(lsa.kind === 'network' && lsa.net ? [{ name: 'Network', value: `${lsa.net.network}/${lsa.net.prefix}` }, ...(lsa.attached ?? []).map((r) => ({ name: 'Attached router', value: `${routerId(topo, r)} (${deviceName(topo, r)})` }))] : []),
         { name: 'Advertising router', value: `${routerId(topo, lsa.origin)} (${deviceName(topo, lsa.origin)})` },
         { name: 'Sequence number', value: String(lsa.seq) },
-        { name: 'LS age / checksum', value: 'not modelled', simulated: true },
-        ...lsa.links.map((l) => ({ name: 'Link to router', value: `${routerId(topo, l.to)} (${deviceName(topo, l.to)}), cost ${l.cost}` })),
+        { name: 'LS age / checksum', value: 'not modelled (no ageing or MaxAge)', simulated: true },
+        ...lsa.links.map((l) => (l.transit
+          ? { name: 'Link to transit LAN', value: `DR ${l.to.slice(4)}, cost ${l.cost}` }
+          : { name: 'Point-to-point link', value: `router ${routerId(topo, l.to)} (${deviceName(topo, l.to)}), cost ${l.cost}` })),
         ...lsa.stubs.map((st) => ({ name: 'Stub network', value: `${st.network}/${st.prefix}` })),
       ] },
     ],
     notes: [
-      `This LSA was created by ${deviceName(topo, lsa.origin)}. Flooding passes it on unchanged, so every router builds the same map.`,
-      'Simplified: no LSA age, acknowledgements or retransmission.',
+      `This LSA was created by ${deviceName(topo, lsa.origin)}. Flooding passes it on unchanged, over FULL adjacencies only, so every router builds the same map.`,
+      'The receiver confirms it with an LSAck (acknowledgements are not animated). LSA ageing and retransmission are not modelled.',
     ],
   };
 }

@@ -246,10 +246,10 @@ export function dvStep(prev: SimState): Frame[] {
 }
 
 /** React to links that were enabled, disabled or changed cost while the simulation runs. */
-export function dvLinkChange(prev: SimState, newTopo: Topology, linkIds: string[]): Frame[] {
+export function dvLinkChange(prev: SimState, newTopo: Topology, linkIds: string[], before?: Topology): Frame[] {
   const frames: Frame[] = [];
   let s = cloneState(prev);
-  const oldTopo = s.topo;
+  const oldTopo = before ?? s.topo;
   s.topo = newTopo;
   const inf = s.dv!.infinity;
   const affected = affectedRouters([oldTopo, newTopo], linkIds);

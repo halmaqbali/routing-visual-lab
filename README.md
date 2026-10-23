@@ -154,7 +154,7 @@ The in-app **Model assumptions** panel lists every simplification. The main ones
 - Each message takes 1 time unit. DV updates run every 30 units. SPF runs 5 units after the last database change.
 - Equal-cost multipath is not modelled.
 - The RIP route timeout (180) is modelled; garbage-collection and hold-down timers are not.
-- The link-state mode is an OSPF-*inspired* teaching model, not OSPF (no areas, DR/BDR, LSA types, ageing or acknowledgements).
+- The link-state mode is **OSPF-style** (OSPFv2, single area 0): neighbour states (Init → 2-Way → ExStart → Exchange → Loading → Full), DR/BDR election on switched LANs, DBD/LSR/LSU database exchange, Router-LSAs and Network-LSAs, loopbacks as /32, a 40-unit Dead interval. Not modelled: other areas, Summary/External LSAs, LSA ageing, retransmission.
 - Each mode uses only its own routes (no redistribution between static and dynamic routes).
 
 See [TEACHER_GUIDE.md](TEACHER_GUIDE.md) for classroom use.

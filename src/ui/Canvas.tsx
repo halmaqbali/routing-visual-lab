@@ -362,7 +362,7 @@ export function Canvas(p: Props) {
     const uy = (b.y - a.y) / len;
     const pad = 32;
     return (
-      <line key={`${kind}-${dl.linkId}-${dl.from}`} x1={a.x + ux * pad} y1={a.y + uy * pad} x2={b.x - ux * (pad + 4)} y2={b.y - uy * (pad + 4)}
+      <line key={`${kind}-${dl.linkId}-${dl.from}-${dl.to}`} x1={a.x + ux * pad} y1={a.y + uy * pad} x2={b.x - ux * (pad + 4)} y2={b.y - uy * (pad + 4)}
         stroke="var(--fg)" strokeWidth={kind === 'route' ? 8 : 6} strokeOpacity={kind === 'route' ? 0.35 : 0.22}
         strokeDasharray={kind === 'spt' ? '2 7' : undefined} strokeLinecap="round" markerEnd={`url(#arrow-${kind})`} />
     );

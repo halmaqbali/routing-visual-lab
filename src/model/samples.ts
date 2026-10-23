@@ -148,3 +148,20 @@ export function addStatic(topo: Topology, routerName: string, ...routes: StaticR
   if (d) d.staticRoutes.push(...routes);
   return t;
 }
+
+/** Three routers on one switched LAN, each with its own PC: shows OSPF DR/BDR election and Network-LSAs. */
+export function ospfLan(): Topology {
+  return buildTopology({
+    routers: [['R1', 170, 150], ['R2', 420, 150], ['R3', 670, 150]],
+    switches: [['SW1', 420, 290]],
+    pcs: [['PC1', 170, 420], ['PC2', 420, 420], ['PC3', 670, 420]],
+    links: [
+      ['R1', '10.0.0.1', 'SW1', '', 24],
+      ['R2', '10.0.0.2', 'SW1', '', 24],
+      ['R3', '10.0.0.3', 'SW1', '', 24],
+      ['R1', '192.168.1.1', 'PC1', '192.168.1.10', 24],
+      ['R2', '192.168.2.1', 'PC2', '192.168.2.10', 24],
+      ['R3', '192.168.3.1', 'PC3', '192.168.3.10', 24],
+    ],
+  });
+}

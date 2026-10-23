@@ -26,7 +26,7 @@ export interface ModeComparison {
 function stats(frames: Frame[], from: number, dest: string, src: string, dst: string): PhaseStats {
   const slice = frames.slice(from);
   const s = frames[frames.length - 1].state;
-  const messages = slice.filter((f) => ['dv-update', 'dv-lost', 'ls-hello', 'ls-flood', 'ls-dup', 'ls-lost'].includes(f.ev.kind)).length;
+  const messages = slice.filter((f) => ['dv-update', 'dv-lost', 'ls-hello', 'ls-adj', 'ls-flood', 'ls-dup', 'ls-lost'].includes(f.ev.kind)).length;
   const tableChanges = slice.reduce((n, f) => n + (f.ev.changes?.length ?? 0), 0);
   const routes = Object.fromEntries(routers(s.topo).map((r) => [r.id, s.tables[r.id]?.find((x) => routeKey(x) === dest)]));
   return { events: slice.length, messages, tableChanges, ping: simulatePing(s.topo, s.tables, src, dst, s.options.ttl), routes, limitHit: slice.some((f) => f.ev.kind === 'limit') };

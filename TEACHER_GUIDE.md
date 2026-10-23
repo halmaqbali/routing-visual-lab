@@ -100,7 +100,7 @@ The link contains the whole lab, so nothing is uploaded. Students on any compute
 
 ## Honest limitations to mention to students
 
-- The link-state mode is a **simplified, OSPF-inspired** model. Real OSPF has areas, DR/BDR, many LSA types, ageing and acknowledgements.
+- The link-state mode is **OSPF-style** (OSPFv2, single area): Hellos and neighbour states up to Full, DR/BDR on switched LANs, DBD/LSR/LSU exchange, Router- and Network-LSAs, Dead interval. It is not complete OSPF: no other areas, Summary/External LSAs, LSA ageing or retransmission.
 - RIP timers (timeout, garbage collection, hold-down) are not modelled, so count to infinity is not slowed down as it would be on real routers.
 - Times are abstract simulation units. Event counts show how a protocol behaves in this model, not real convergence times.
 - The generated Huawei/Cisco commands are a learning aid, not a complete device configuration.

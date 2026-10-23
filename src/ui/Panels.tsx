@@ -96,7 +96,7 @@ export function SettingsPanel({ mode, options, level, onOptions, topo }: { mode:
       )}
       {mode === 'ls' && (
         <p className="small">
-          Simplified OSPF-inspired model: one area, point-to-point links, Hello without timers, flooding with sequence numbers, SPF 5 time units after the last database change. Not a complete OSPF implementation.
+          OSPF-style link state (OSPFv2, single area 0): Hellos with neighbour states up to Full, DR/BDR election on switched LANs, DBD/LSR/LSU database exchange, Router-LSAs and Network-LSAs, flooding over Full adjacencies, Dead interval 40, SPF 5 time units after the last database change. Not modelled: other areas, LSA ageing and retransmission (see Model assumptions).
         </p>
       )}
       {level === 'advanced' && (
@@ -276,15 +276,18 @@ export function Assumptions({ onClose }: { onClose: () => void }) {
           <li>Cost changes take effect when the next advertisement arrives.</li>
           <li>Convergence is declared when a full periodic round changes nothing.</li>
         </ul>
-        <h3>Link state (OSPF-inspired, simplified)</h3>
+        <h3>Link state (OSPF-style: OSPFv2, single area)</h3>
         <ul>
-          <li>This is a teaching model, not OSPF. No areas, DR/BDR, LSA types, ageing, acknowledgements or retransmission.</li>
-          <li>Neighbour discovery: a single Hello exchange on each enabled router–router link (no timers).</li>
-          <li>Each router's LSA lists its router neighbours with link costs and its connected networks. Sequence numbers decide which copy is newer.</li>
-          <li>A received LSA is stored and flooded to all other neighbours only if it is newer; duplicates are discarded.</li>
-          <li>Database synchronisation when a new adjacency forms: each side sends all LSAs it has.</li>
-          <li>SPF runs 5 time units after the router's last database change. Links are used only if both ends report them (two-way check).</li>
-          <li>Route cost to a network = SPF cost to the router that advertises it (networks themselves add 0).</li>
+          <li>Close to OSPFv2 for one area (area 0), but still a teaching model: it is not a complete OSPF implementation.</li>
+          <li>Router ID = the highest loopback address, otherwise the highest interface address. All router priorities are 1.</li>
+          <li>Hellos list the neighbours already heard. A neighbour is <em>Init</em> until a router sees its own router ID in the neighbour's Hello (<em>2-Way</em>). Only the Hellos that change something are shown; the periodic 10-second Hellos are not animated.</li>
+          <li>Switched LANs are multi-access: after 2-Way the routers elect a DR (highest router ID) and BDR. A working DR is never replaced (no preemption); if it fails, the BDR takes over. DROTHERs stay 2-Way with each other.</li>
+          <li>Adjacency: ExStart (master = higher router ID) → Exchange (DBD headers) → Loading (LSR, LSU, LSAck) → Full. DBD sequence numbers, flags and retransmissions are not modelled; LSAcks are mentioned but not animated.</li>
+          <li>Router-LSAs (Type 1) list only FULL neighbours, transit LANs and stub networks; loopbacks are advertised as /32. The DR originates a Network-LSA (Type 2) listing the attached routers. No Summary or External LSAs (no areas, no redistribution).</li>
+          <li>LSAs are flooded only over FULL adjacencies, unchanged, and only when newer (higher sequence number). LSA age, MaxAge and refresh every 30 minutes are not modelled.</li>
+          <li>A failed interface is noticed at once by its own router. A neighbour that disappears behind a switch is declared down after the Dead interval (40 time units).</li>
+          <li>SPF runs 5 time units after the router's last database change. Point-to-point links are used only if both ends report them; a LAN is its own node (router → LAN = interface cost, LAN → router = 0).</li>
+          <li>Interface costs are the link costs you set (no reference-bandwidth calculation). Equal-cost paths are not load-shared.</li>
         </ul>
         <h3>Saving and sharing</h3>
         <ul>

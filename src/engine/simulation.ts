@@ -104,8 +104,8 @@ export function applyLinkChange(frames: Frame[], cursor: number, newTopo: Topolo
         : 'No routing table changed. Static routes do not react to failures elsewhere in the network: routers only notice their OWN interfaces.',
       changes,
     })];
-  } else if (at.mode === 'dv') reaction = dvLinkChange(s, newTopo, linkIds);
-  else reaction = lsLinkChange(s, newTopo, linkIds);
+  } else if (at.mode === 'dv') reaction = dvLinkChange(s, newTopo, linkIds, at.topo);
+  else reaction = lsLinkChange(s, newTopo, linkIds, at.topo);
   return extend([...kept, cfg, ...reaction]);
 }
 

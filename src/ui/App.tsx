@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_OPTIONS, type Level, type Link, type Mode, type SimOptions, type Topology } from '../model/types';
-import { fiveRouter, loopbackLine, switchedLan, threeRouter, triangle } from '../model/samples';
+import { fiveRouter, loopbackLine, ospfLan, switchedLan, threeRouter, triangle } from '../model/samples';
 import { addDevice, addLink, deviceName, getDevice, removeDevice, removeLink } from '../model/topology';
 import { validateTopology } from '../model/validate';
 import { applyLinkChange, applyStaticConfigChange, buildPingFrames, clearL2, createTimeline, insertFrames, pingStatsFrame } from '../engine/simulation';
@@ -408,7 +408,7 @@ export default function App() {
   };
 
   const newLab = (kind: string) => {
-    const t = kind === 'three' ? threeRouter() : kind === 'five' ? fiveRouter() : kind === 'triangle' ? triangle() : kind === 'switch' ? switchedLan() : kind === 'loopback' ? loopbackLine() : { devices: [], links: [] };
+    const t = kind === 'three' ? threeRouter() : kind === 'five' ? fiveRouter() : kind === 'triangle' ? triangle() : kind === 'switch' ? switchedLan() : kind === 'loopback' ? loopbackLine() : kind === 'ospflan' ? ospfLan() : { devices: [], links: [] };
     const kept = keepCurrentWork();
     const now = new Date().toISOString();
     loadLab(
@@ -616,7 +616,11 @@ export default function App() {
     if (!spf) return [];
     const limit = state.spfView?.router === selRouter ? state.spfView.step : spf.steps.length;
     const confirmed = new Set(spf.steps.slice(0, limit).map((s) => s.selected));
-    return Object.entries(spf.pred).filter(([n, p]) => p && confirmed.has(n)).map(([n, p]) => ({ linkId: p!.linkId, from: p!.node, to: n }));
+    // Draw router-to-router; a transit LAN in between is skipped (the arrow crosses the switch).
+    return Object.entries(spf.pred)
+      .filter(([n, p]) => p && confirmed.has(n) && !n.startsWith('net:'))
+      .map(([n, p]) => ({ linkId: p!.linkId, from: p!.node.startsWith('net:') ? spf.pred[p!.node]?.node ?? p!.node : p!.node, to: n }))
+      .filter((d) => !d.from.startsWith('net:'));
   }, [state, selRouter, mode]);
   const gated = teacher.on && teacher.gate && !!scenario && predicted === null && !ungated;
   const ctx = { frames, cursor, state, topo: curTopo, selected: selRouter };
@@ -898,7 +902,7 @@ export default function App() {
   };
 
   const themeLabel = theme === 'system' ? 'Automatic' : theme === 'light' ? 'Light' : 'Dark';
-  const NEW_LABS: [string, string][] = [['three', '3 routers (simple)'], ['five', '5 routers (alternative paths)'], ['triangle', 'Triangle (weighted)'], ['switch', 'Switched LAN'], ['loopback', 'R1–R2–R3 with loopbacks'], ['empty', 'Empty canvas']];
+  const NEW_LABS: [string, string][] = [['three', '3 routers (simple)'], ['five', '5 routers (alternative paths)'], ['triangle', 'Triangle (weighted)'], ['switch', 'Switched LAN'], ['loopback', 'R1–R2–R3 with loopbacks'], ['ospflan', 'OSPF LAN: 3 routers on a switch (DR/BDR)'], ['empty', 'Empty canvas']];
   const labMenu: MenuItem[] = [
     { label: 'Save lab', hint: labInfo.inLibrary ? '' : 'in this browser', onSelect: saveLab },
     { label: 'Save as / rename…', onSelect: () => setDialog('save') },

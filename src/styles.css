@@ -644,3 +644,4 @@ fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 
 .present-bar .present-title { font-weight: 700; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50vw; }
 .presenting .step-dock { display: none; }
 @media (prefers-reduced-motion: reduce) { .pulse-dot { animation: none; } }
+.run-badge { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--fg); font-size: 12px; font-weight: 700; }

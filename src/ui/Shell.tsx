@@ -154,11 +154,12 @@ export function PingPopover({ topo, form, setForm, count, setCount, onRun, onClo
       <fieldset className="pp-field">
         <legend>How many</legend>
         <div className="segm">
-          {([[1, '1'], [3, '3'], [0, 'Until stopped']] as const).map(([n, l]) => (
+          {([[1, '1'], [3, '3'], [0, '∞ Continuous']] as const).map(([n, l]) => (
             <button key={n} type="button" aria-pressed={count === n} onClick={() => setCount(n)}>{l}</button>
           ))}
         </div>
       </fieldset>
+      {count === 0 && <p className="pp-note">Keeps pinging until you press <strong>Stop</strong>. Tip: raise the speed to 2× or 4× to see many pings quickly.</p>}
       {advanced && src?.kind === 'router' && (
         <label className="pp-field">Source address
           <select value={form.srcIp} onChange={(e) => setForm({ ...form, srcIp: e.target.value })}>

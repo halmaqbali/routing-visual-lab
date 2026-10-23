@@ -24,7 +24,7 @@ import { addressList, NotePanel, type PingForm } from './Tools';
 
 type ViewMode = Mode | 'compare';
 /** A ping in progress: pings are sent one at a time, as the timeline reaches each one. */
-interface PingRun { form: PingForm; total: number; sent: number; received: number; endIndex: number; waitAt: number | null }
+interface PingRun { form: PingForm; total: number; sent: number; received: number; endIndex: number; waitAt: number | null; lastOk?: boolean }
 interface Teacher { on: boolean; gate: boolean; oneAtATime: boolean; hideValues: boolean }
 interface LabInfo { id: string; name: string; createdAt: string; inLibrary: boolean; exercise?: Lab['exercise'] }
 interface Snapshot { topo: Topology; notes: Note[] }
@@ -515,7 +515,7 @@ export default function App() {
   /** Insert the next ping of the run right after frame `at`, using the routing tables (and learned ARP/MAC entries) at that moment. */
   const sendNextPing = (r: PingRun, at: number, base: Frame[] = frames) => {
     const { frames: pf, result } = buildPingFrames(base[at].state, { src: r.form.src, srcIp: r.form.srcIp || undefined, dstIp: r.form.dstIp, seq: r.sent + 1 }, pingLabel(r.sent + 1, r.total));
-    const next: PingRun = { ...r, sent: r.sent + 1, received: r.received + (result.success ? 1 : 0), endIndex: at + pf.length, waitAt: null };
+    const next: PingRun = { ...r, sent: r.sent + 1, received: r.received + (result.success ? 1 : 0), endIndex: at + pf.length, waitAt: null, lastOk: result.success };
     setFrames(insertFrames(base, at, pf));
     setRun(next);
     setLastStats({ sent: next.sent, received: next.received });
@@ -675,12 +675,16 @@ export default function App() {
   );
 
   const ev = frame.ev;
+  // Only count pings whose animation has finished, so the counter never gives away the current ping's result.
+  const inFlight = !!run && run.waitAt === null && cursor <= run.endIndex;
+  const done = run ? { sent: run.sent - (inFlight ? 1 : 0), received: run.received - (inFlight && run.lastOk ? 1 : 0) } : { sent: 0, received: 0 };
   const CAT_LABEL: Record<string, string> = { config: 'Configuration', control: 'Routing update', lsa: 'Link-state message', spf: 'Shortest-path calculation', data: 'Data packet', info: 'Information' };
   const stepCard = (
     <section className={`step-card ${wide ? '' : 'flat'}`} aria-label="Current step">
       <div className="step-meta">
         <span className={`cat-tag ${ev.category}`}>{ev.category === 'data' && <Icon name="ping" size={13} />}{CAT_LABEL[ev.category]}</span>
         <span className="muted">Step {cursor + 1} of {frames.length} · t = {ev.time}</span>
+        {run && <span className="run-badge">{run.total === Infinity ? '∞ Continuous ping' : 'Ping'} {run.sent}{run.total !== Infinity ? ` of ${run.total}` : ''}{done.sent > 0 ? ` · ${done.sent} done · ${done.received} replied` : ''}</span>}
         <span className="grow-1" />
         {ev.packet && <button className="link-btn" onClick={() => openTab('packet')}>Inspect packet</button>}
         {wide && <button className="link-btn" onClick={() => setStepsOpen(!stepsOpen)} aria-expanded={stepsOpen}>All {frames.length} steps</button>}
@@ -945,7 +949,7 @@ export default function App() {
           <div className="ping-status" role="status">
             <span className="pulse-dot" aria-hidden />
             {wide && <span><strong>Pinging</strong> {deviceName(curTopo, run.form.src)} → {dstText(run.form)}</span>}
-            <span className="muted">{run.total === Infinity ? `#${lastStats?.sent ?? 1}` : `${lastStats?.sent ?? 1} of ${run.total}`}</span>
+            <span className="muted">{run.total === Infinity ? `∞ ping ${run.sent}` : `ping ${run.sent} of ${run.total}`}{done.sent > 0 ? ` · ${done.received}/${done.sent} replied` : ''}</span>
             <button className="mini-btn" onClick={() => { setPlaying(false); finishPing(run, cursor); }}>Stop</button>
           </div>
         ) : (

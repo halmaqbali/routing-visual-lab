@@ -419,6 +419,39 @@ export default function App() {
     setScenarioId(null);
   };
 
+  /** Start fresh: the default 3-router lab with every setting back to its default. Saved labs are kept. */
+  const startFresh = () => {
+    if (!confirm('Start fresh? This loads the default 3-router lab and resets every setting (mode, simulation options, theme, view, panels, ping). Labs saved in Open Lab are kept.')) return;
+    const kept = keepCurrentWork();
+    const now = new Date().toISOString();
+    loadLab(
+      { format: LAB_FORMAT, version: LAB_VERSION, id: newId(), name: 'My lab', createdAt: now, updatedAt: now, topo: threeRouter(), notes: [], mode: 'static', options: mergeOptions(), level: 'beginner' },
+      { inLibrary: false, exercise: undefined },
+      `Started fresh: default lab and settings.${kept}`,
+    );
+    setScenarioId(null);
+    setUngated(false);
+    setSelectedKey(null);
+    setTool('select');
+    setPendingLink(null);
+    setSpeed(1);
+    setPingCount(3);
+    setLastStats(null);
+    setTeacher({ on: false, gate: true, oneAtATime: false, hideValues: false });
+    setLarge(false);
+    setFollow(true);
+    setShowAddr(true);
+    setShowGrid(true);
+    setSnap(true);
+    setReducedMotion(typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches);
+    setTheme('system');
+    resetLayout();
+    setDetailsTab('inspect');
+    setMobileTab('step');
+    setStepsOpen(false);
+    setPingOpen(false);
+  };
+
   const saveToLibrary = (name?: string) => {
     try {
       const lab = { ...currentLab(), name: name ?? labInfo.name };
@@ -913,6 +946,8 @@ export default function App() {
     { separator: true },
     { label: 'Import lab file…', onSelect: () => fileRef.current?.click() },
     { label: 'Export lab file', onSelect: () => downloadLab(currentLab()) },
+    { separator: true },
+    { label: 'Start fresh…', hint: 'reset everything', onSelect: startFresh },
   ];
   const moreMenu: MenuItem[] = [
     { label: 'Open lab…', onSelect: () => setDialog('open') },
@@ -925,6 +960,7 @@ export default function App() {
     { label: 'Reduce motion', checked: reducedMotion, onSelect: () => setReducedMotion(!reducedMotion) },
     { label: 'Reset panel size', onSelect: () => resetLayout() },
     { separator: true },
+    { label: 'Start fresh…', hint: 'reset everything', onSelect: startFresh },
     { label: 'Model assumptions', onSelect: () => setShowAssumptions(true) },
   ];
 

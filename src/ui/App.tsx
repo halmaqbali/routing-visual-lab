@@ -14,12 +14,13 @@ import { applyTheme, loadTheme, saveTheme, type ThemePref } from '../lab/theme';
 import { Canvas, DEFAULT_VIEW, fitView, GRID, VIEW_H, VIEW_W, type DirLink, type Sel, type Tool, type View } from './Canvas';
 import { Inspector } from './Inspector';
 import { Explain } from './Explain';
-import { Controls, Timeline } from './Timeline';
+import { Timeline } from './Timeline';
 import { Assumptions, ComparePanel, Legend, ScenarioPanel, SettingsPanel } from './Panels';
-import { clamp, DEFAULT_LAYOUT, MIN, PANEL_NAMES, PanelBar, PanelButtons, Splitter, useElementSize, useLayoutPrefs, useMediaQuery, type MoveDir, type PanelId } from './Layout';
+import { clamp, DEFAULT_LAYOUT, MIN, Splitter, useElementSize, useLayoutPrefs, useMediaQuery } from './Layout';
+import { Icon, MenuButton, PingPopover, type MenuItem } from './Shell';
 import { PacketInspector } from './PacketInspector';
 import { ConnectivityCheck, downloadLab, NameDialog, OpenLabDialog, ShareDialog } from './LabDialogs';
-import { addressList, NotePanel, PingTool, type PingForm } from './Tools';
+import { addressList, NotePanel, type PingForm } from './Tools';
 
 type ViewMode = Mode | 'compare';
 /** A ping in progress: pings are sent one at a time, as the timeline reaches each one. */
@@ -28,6 +29,7 @@ interface Teacher { on: boolean; gate: boolean; oneAtATime: boolean; hideValues:
 interface LabInfo { id: string; name: string; createdAt: string; inLibrary: boolean; exercise?: Lab['exercise'] }
 interface Snapshot { topo: Topology; notes: Note[] }
 type DetailsTab = 'inspect' | 'packet' | 'scenario' | 'settings';
+type MobileTab = 'step' | 'device' | 'packet' | 'lesson' | 'steps' | 'settings';
 
 const simModeOf = (m: ViewMode): Mode => (m === 'compare' ? 'static' : m);
 const startCursor = (m: ViewMode, f: Frame[]) => (simModeOf(m) === 'static' ? f.length - 1 : 0);
@@ -120,16 +122,14 @@ export default function App() {
   // Layout (separate from simulation state: resizing never touches frames, topology or selection)
   const wide = useMediaQuery('(min-width: 900px)');
   const { layout, patch: patchLayout, reset: resetLayout } = useLayoutPrefs();
-  const [maxed, setMaxed] = useState<PanelId | null>(null);
   const [presenting, setPresenting] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [moving, setMoving] = useState<{ id: PanelId; x: number; y: number; over: number | null } | null>(null);
-  const swapPanelsRef = useRef<(a: number, b: number) => void>(() => {});
-  const wsEl = useRef<HTMLElement | null>(null);
-  const [wsRef, wsSize] = useElementSize<HTMLElement>();
-  const [leftRef, leftSize] = useElementSize<HTMLDivElement>();
-  const [rightRef, rightSize] = useElementSize<HTMLDivElement>();
-  const setWorkspace = useCallback((el: HTMLElement | null) => { wsRef(el); wsEl.current = el; }, [wsRef]);
+  const [pingOpen, setPingOpen] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
+  const [mobileTab, setMobileTab] = useState<MobileTab>('step');
+  const shellEl = useRef<HTMLDivElement | null>(null);
+  const [shellRef, shellSize] = useElementSize<HTMLDivElement>();
+  const setShell = useCallback((el: HTMLDivElement | null) => { shellRef(el); shellEl.current = el; }, [shellRef]);
 
   const frame = frames[Math.min(cursor, frames.length - 1)];
   const state = frame.state;
@@ -194,6 +194,13 @@ export default function App() {
   }, [curTopo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const flash = (text: string, kind: 'info' | 'warn' | 'err' = 'info') => setNotice({ kind, text });
+
+  // Informational messages fade out on their own; warnings and errors stay until dismissed.
+  useEffect(() => {
+    if (notice?.kind !== 'info') return;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const rebuild = useCallback((t: Topology, m: ViewMode, o: SimOptions, note?: string) => {
     const f = createTimeline(t, simModeOf(m), o);
@@ -574,36 +581,6 @@ export default function App() {
     return () => document.removeEventListener('fullscreenchange', on);
   }, []);
 
-  // Dragging a panel by its move handle: follow the pointer, highlight the position under it, swap on release.
-  const movingId = moving?.id;
-  useEffect(() => {
-    if (!movingId) return;
-    const slotAt = (x: number, y: number) => {
-      const el = document.elementFromPoint(x, y)?.closest('[data-slot]') as HTMLElement | null;
-      return el ? Number(el.dataset.slot) : null;
-    };
-    const move = (e: PointerEvent) => setMoving((m) => m && { ...m, x: e.clientX, y: e.clientY, over: slotAt(e.clientX, e.clientY) });
-    const up = (e: PointerEvent) => {
-      const over = slotAt(e.clientX, e.clientY);
-      const from = layout.order.indexOf(movingId);
-      setMoving(null);
-      if (over !== null && over !== from) swapPanelsRef.current(from, over);
-    };
-    const cancel = (e: KeyboardEvent | PointerEvent) => { if (!('key' in e) || e.key === 'Escape') setMoving(null); };
-    document.body.classList.add('moving-panel');
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', cancel);
-    window.addEventListener('keydown', cancel);
-    return () => {
-      document.body.classList.remove('moving-panel');
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', cancel);
-      window.removeEventListener('keydown', cancel);
-    };
-  }, [movingId, layout.order]);
-
   // ------------------------------------------------------------ keyboard
 
   const undoRef = useRef(undo);
@@ -614,7 +591,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) || (e.target as HTMLElement).isContentEditable;
-      if (e.key === 'Escape') { setMaxed(null); setPresenting(false); }
+      if (e.key === 'Escape') { setPresenting(false); setStepsOpen(false); }
       if (!typing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redoRef.current(); else undoRef.current(); return; }
       if (!typing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redoRef.current(); return; }
       if (typing || (e.target as HTMLElement).getAttribute('role') === 'separator' || mode === 'compare') return;
@@ -647,52 +624,11 @@ export default function App() {
   const warnings = issues.filter((i) => i.severity === 'warning');
   const selNote = sel?.kind === 'note' ? notes.find((n) => n.id === sel.id) : undefined;
 
-  // ------------------------------------------------------------ panel sections (the same elements are placed by every layout)
+  // ------------------------------------------------------------ layout (redesign: header · tool rail · stage · inspector)
 
-  // Positions: [left top, left bottom, right top, right bottom]. The top panel of each column has a height
-  // (canvasH = left column, timelineH = right column); the bottom panel takes the rest.
-  const order = layout.order;
-  const visible = (id: PanelId) => !(id === 'timeline' && mode === 'compare');
-  const collapsedOf = (id: PanelId) => (id === 'timeline' ? layout.timelineCollapsed : id === 'details' ? layout.detailsCollapsed && mode !== 'compare' : false);
-  const minTop = (id: PanelId) => (id === 'canvas' ? MIN.canvasH : MIN.timelineH);
-  const sidebarMax = Math.max(MIN.sidebar, wsSize.w - MIN.left - 12);
-  const sidebarW = clamp(layout.sidebar, MIN.sidebar, wsSize.w ? sidebarMax : layout.sidebar);
-  const canvasMax = Math.max(minTop(order[0]), leftSize.h - MIN.simH - 12);
-  const canvasH = clamp(layout.canvasH, minTop(order[0]), leftSize.h ? canvasMax : layout.canvasH);
-  const timelineMax = Math.max(minTop(order[2]), rightSize.h - MIN.detailsH - 12);
-  const timelineH = clamp(layout.timelineH, minTop(order[2]), rightSize.h ? timelineMax : layout.timelineH);
-  const setVar = (name: string, v: number) => wsEl.current?.style.setProperty(name, `${v}px`);
-
-  // ------------------------------------------------------------ moving panels (swap positions)
-
-  const swapPanels = (a: number, b: number) => {
-    const o = [...order];
-    [o[a], o[b]] = [o[b], o[a]];
-    patchLayout({ order: o });
-    flash(`Moved the ${PANEL_NAMES[o[b]]} panel; it swapped places with ${PANEL_NAMES[o[a]]}.`);
-  };
-  const startMove = (id: PanelId, e: React.PointerEvent) => {
-    e.preventDefault();
-    setMoving({ id, x: e.clientX, y: e.clientY, over: null });
-  };
-  const moveKey = (id: PanelId, dir: MoveDir) => {
-    const i = order.indexOf(id);
-    let j = -1;
-    if (wide) {
-      if (dir === 'up' && i % 2 === 1) j = i - 1;
-      if (dir === 'down' && i % 2 === 0) j = i + 1;
-      if (dir === 'left' && i >= 2) j = i - 2;
-      if (dir === 'right' && i < 2) j = i + 2;
-    } else {
-      if (dir === 'up' && i > 0) j = i - 1;
-      if (dir === 'down' && i < 3) j = i + 1;
-    }
-    if (j < 0) return;
-    swapPanels(i, j);
-    requestAnimationFrame(() => (document.querySelector(`.move-grip[aria-label^="Move ${PANEL_NAMES[id]}"]`) as HTMLElement | null)?.focus());
-  };
-  const mv = { onMoveStart: startMove, onMoveKey: moveKey };
-  swapPanelsRef.current = swapPanels;
+  const sidebarMax = Math.max(MIN.sidebar, shellSize.w - 64 - MIN.left);
+  const sidebarW = clamp(layout.sidebar, MIN.sidebar, shellSize.w ? sidebarMax : layout.sidebar);
+  const setVar = (name: string, v: number) => shellEl.current?.style.setProperty(name, `${v}px`);
 
   const zoomBy = (f: number) => {
     const k = clamp(view.k * f, 0.3, 3);
@@ -701,188 +637,255 @@ export default function App() {
     setView({ k, x: cx - ((cx - view.x) * k) / view.k, y: cy - ((cy - view.y) * k) / view.k });
   };
 
-  const controls = (
-    <Controls
-      cursor={cursor} total={frames.length} playing={playing} speed={speed} playDisabled={oneAtATime}
-      canAdvance={!!run || cursor < frames.length - 1} endDisabled={!!run}
-      onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
-      onPrev={() => { setPlaying(false); setCursor(Math.max(0, cursor - 1)); }}
-      onNext={() => { setPlaying(false); advance(); }}
-      onEnd={() => { setPlaying(false); setCursor(frames.length - 1); }}
-      onReset={() => rebuild(topo, mode, options, 'Simulation reset to time 0 using the current configuration.')}
-      onSpeed={setSpeed}
-    />
-  );
+  const jump = (i: number) => { setPlaying(false); if (run) finishPing(run, i); else setCursor(i); };
+  const clearL2Now = () => { setFrames(clearL2(frames, cursor)); setCursor(cursor + 1); setRun(null); flash('ARP caches and switch MAC tables were cleared. The next ping will use ARP and flooding again.'); };
+  const l2Text = `Learned so far: ${Object.values(state.l2.arp).reduce((n, t) => n + Object.keys(t).length, 0)} ARP entries, ${Object.values(state.l2.mac).reduce((n, t) => n + t.length, 0)} MAC table entries.`;
+  const openTab = (t: DetailsTab) => {
+    setDetailsTab(t);
+    setMobileTab(t === 'inspect' ? 'device' : t === 'packet' ? 'packet' : t === 'scenario' ? 'lesson' : 'settings');
+    if (layout.detailsCollapsed) patchLayout({ detailsCollapsed: false });
+  };
 
   const TOOLS: [Tool, string, string, string][] = [
-    ['select', '↖', 'Select', 'Select, move and pan'],
-    ['router', 'R', 'Router', 'Router'],
-    ['pc', 'PC', 'PC', 'PC'],
-    ['switch', 'SW', 'Switch', 'Unmanaged Layer 2 switch'],
-    ['link', '⟷', 'Link', 'Connection tool: Ethernet link'],
-    ['note', '✎', 'Note', 'Note: click the canvas to add one'],
-    ['delete', '🗑', 'Delete', 'Delete devices, links or notes'],
+    ['select', 'select', 'Select', 'Select, move and pan'],
+    ['router', 'router', 'Router', 'Add a router'],
+    ['pc', 'pc', 'PC', 'Add a PC'],
+    ['switch', 'switch', 'Switch', 'Add an unmanaged switch'],
+    ['link', 'cable', 'Cable', 'Connect two devices with a cable'],
+    ['note', 'note', 'Note', 'Add a note: click the canvas'],
   ];
 
-  const canvasSection = (
-    <section className="card canvas-wrap panel" aria-label="Network canvas">
-      <div className="toolbar" role="toolbar" aria-label="Canvas options">
-        <label className="small"><input type="checkbox" checked={showAddr} onChange={(e) => setShowAddr(e.target.checked)} /> Addresses</label>
-        <label className="small"><input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} /> Grid</label>
-        <label className="small"><input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} /> Snap</label>
-        <label className="small"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Follow events</label>
-        <span className="zoom-group" role="group" aria-label="Zoom">
-          <button className="btn small icon" onClick={() => zoomBy(1 / 1.25)} aria-label="Zoom out" title="Zoom out">−</button>
-          <span className="small zoom-pct">{Math.round(view.k * 100)}%</span>
-          <button className="btn small icon" onClick={() => zoomBy(1.25)} aria-label="Zoom in" title="Zoom in">+</button>
-          <button className="btn small" onClick={() => setView(fitView(curTopo, pos, notes))} title="Fit the whole network on screen">Fit</button>
-        </span>
-        <span className="hint">{tool === 'router' || tool === 'pc' || tool === 'switch' ? 'Click empty space to place it.' : tool === 'note' ? 'Click where the note should go.' : tool === 'link' ? (pendingLink ? 'Click the second device.' : 'Click the first device.') : tool === 'delete' ? 'Click a device, link or note to delete it.' : 'Drag devices · drag empty space to pan · Ctrl+scroll to zoom'}</span>
-        {!presenting && (
-          <PanelButtons id="canvas" maxed={maxed} onMax={setMaxed} {...mv}
-            extra={<button className="btn small" onClick={startPresenting} title="Full-screen topology for classroom presentation">⛶ Present</button>} />
-        )}
+  const toolHint = tool === 'router' || tool === 'pc' || tool === 'switch' ? 'Click an empty spot to place it' : tool === 'note' ? 'Click where the note should go' : tool === 'link' ? (pendingLink ? 'Now click the second device' : 'Click the first device') : tool === 'delete' ? 'Click a device, cable or note to delete it' : '';
+
+  const rail = (
+    <nav className={`rail ${wide ? '' : 'rail-h'}`} aria-label="Tools">
+      {TOOLS.map(([t, icon, short, label]) => (
+        <button key={t} className="rail-btn" aria-pressed={tool === t} title={label} aria-label={label} onClick={() => { setTool(t); setPendingLink(null); }}>
+          <Icon name={icon} size={20} /><span>{short}</span>
+        </button>
+      ))}
+      <div className="rail-sep" />
+      <button className="rail-btn small" onClick={undo} disabled={!undoStack.current.length} title="Undo (Ctrl+Z)" aria-label="Undo"><Icon name="undo" /></button>
+      <button className="rail-btn small" onClick={redo} disabled={!redoStack.current.length} title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><Icon name="redo" /></button>
+      <div className="rail-grow" />
+      <button className="rail-btn" aria-pressed={tool === 'delete'} title="Delete: click a device, cable or note" aria-label="Delete tool" onClick={() => { if (sel && tool === 'select') onDelete(sel); else { setTool('delete'); setPendingLink(null); } }}>
+        <Icon name="trash" size={20} /><span>Delete</span>
+      </button>
+    </nav>
+  );
+
+  const ev = frame.ev;
+  const CAT_LABEL: Record<string, string> = { config: 'Configuration', control: 'Routing update', lsa: 'Link-state message', spf: 'Shortest-path calculation', data: 'Data packet', info: 'Information' };
+  const stepCard = (
+    <section className={`step-card ${wide ? '' : 'flat'}`} aria-label="Current step">
+      <div className="step-meta">
+        <span className={`cat-tag ${ev.category}`}>{ev.category === 'data' && <Icon name="ping" size={13} />}{CAT_LABEL[ev.category]}</span>
+        <span className="muted">Step {cursor + 1} of {frames.length} · t = {ev.time}</span>
+        <span className="grow-1" />
+        {ev.packet && <button className="link-btn" onClick={() => openTab('packet')}>Inspect packet</button>}
+        {wide && <button className="link-btn" onClick={() => setStepsOpen(!stepsOpen)} aria-expanded={stepsOpen}>All {frames.length} steps</button>}
       </div>
-      <div className="canvas-body">
-        <div className="tool-palette" role="toolbar" aria-label="Network devices and tools" aria-orientation="vertical">
-          {TOOLS.map(([t, icon, short, label]) => (
-            <button key={t} className="tool-btn" aria-pressed={tool === t} onClick={() => { setTool(t); setPendingLink(null); }} title={label} aria-label={label}>
-              <span className="tool-icon" aria-hidden>{icon}</span>
-              <span className="tool-label">{short}</span>
-            </button>
-          ))}
+      <h2 className="step-title" aria-live="polite">{ev.title}</h2>
+      {gated ? (
+        <div className="gate-inline">
+          <span>Make your prediction in the Lesson tab first. The explanation is hidden in Teacher Mode until then.</span>
+          <button className="link-btn" onClick={() => setUngated(true)}>Show anyway</button>
         </div>
-        <div className="canvas-area">
-          <Canvas
-            topo={curTopo} pos={pos} notes={notes} mode={mode} options={options} selected={sel} tool={tool} pendingLinkFrom={pendingLink}
-            anim={mode === 'compare' ? undefined : frame.ev.anim} animKey={cursor} duration={Math.min(1200, interval * 0.75)} reducedMotion={reducedMotion}
-            routePath={routePath} sptPath={sptPath} focus={mode === 'compare' ? [] : frame.ev.routers ?? []} showAddresses={showAddr} showGrid={showGrid}
-            view={view} onView={setView}
-            onSelect={onSelect} onBackground={onBackground} onDevice={onDevice} onMove={onMove}
-            onNoteChange={onNoteChange}
-            onNoteOpen={(id) => { setSel({ kind: 'note', id }); setDetailsTab('inspect'); if (layout.detailsCollapsed) patchLayout({ detailsCollapsed: false }); setTimeout(() => (document.getElementById('note-text') as HTMLTextAreaElement | null)?.focus(), 50); }}
-            onPacketClick={() => { setPlaying(false); setDetailsTab('packet'); if (layout.detailsCollapsed) patchLayout({ detailsCollapsed: false }); }}
-          />
+      ) : (
+        <p className={`step-text ${showDetail ? '' : 'clamp'}`}>{ev.explain}</p>
+      )}
+      {showDetail && !gated && (
+        <div className="step-detail">
+          <Explain frame={frame} index={cursor} total={frames.length} level={level} gated={false} hideValues={teacher.on && teacher.hideValues} onUngate={() => setUngated(true)} compact />
+        </div>
+      )}
+      <div className="step-controls">
+        <div className="transport">
+          <button className="tbtn" onClick={() => { setPlaying(false); setCursor(Math.max(0, cursor - 1)); }} disabled={cursor <= 0} aria-label="Previous step (←)" title="Previous step (←)"><Icon name="prev" size={16} /></button>
+          {playing ? (
+            <button className="tbtn primary" onClick={() => setPlaying(false)} aria-label="Pause (Space)"><Icon name="pause" size={14} /> Pause</button>
+          ) : (
+            <button className="tbtn primary" onClick={() => setPlaying(true)} disabled={oneAtATime || !(run || cursor < frames.length - 1)} aria-label="Play (Space)" title={oneAtATime ? 'Teacher Mode: one step at a time' : 'Play (Space)'}><Icon name="play" size={14} /> Play</button>
+          )}
+          <button className="tbtn" onClick={() => { setPlaying(false); advance(); }} disabled={!(run || cursor < frames.length - 1)} aria-label="Next step (→)" title="Next step (→)"><Icon name="next" size={16} /></button>
+        </div>
+        <input className="scrub" type="range" min={0} max={Math.max(0, frames.length - 1)} value={cursor} aria-label={`Step ${cursor + 1} of ${frames.length}`}
+          disabled={oneAtATime || !!run} onChange={(e) => jump(Number(e.target.value))} />
+        <div className="transport-extra">
+          <button className="tbtn ghost" onClick={() => { setPlaying(false); setCursor(frames.length - 1); }} disabled={cursor >= frames.length - 1 || oneAtATime || !!run} aria-label="Jump to the last step" title="Jump to the last step (End)"><Icon name="end" size={16} /></button>
+          <button className="tbtn ghost" onClick={() => rebuild(topo, mode, options, 'Simulation reset to time 0 using the current configuration.')} aria-label="Restart the simulation" title="Restart from time 0"><Icon name="reset" size={16} /></button>
+          <label className="speed">Speed
+            <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
+              {[0.25, 0.5, 1, 2, 4].map((s) => <option key={s} value={s}>{s}×</option>)}
+            </select>
+          </label>
+          {!gated && <button className="link-btn" onClick={() => setShowDetail(!showDetail)} aria-expanded={showDetail}>{showDetail ? 'Less' : 'Details'}</button>}
         </div>
       </div>
     </section>
   );
 
-  const simSection = (
-    <section className="panel plain" aria-label={mode === 'compare' ? 'Comparison' : 'Simulation controls and explanation'}>
-      <PanelBar title={mode === 'compare' ? 'Comparison' : 'Simulation controls'}>
-        <PanelButtons id="sim" maxed={maxed} onMax={setMaxed} {...mv} />
-      </PanelBar>
-      <div className="panel-body">
-        {mode === 'compare' ? (
-          <ComparePanel topo={applyPositions(topo, pos)} options={options} />
-        ) : (
-          <>
-            <section className="card stack" aria-label="Simulation and ping controls">
-              {controls}
-              <PingTool topo={curTopo} form={pingForm} setForm={setPingForm} count={pingCount} setCount={setPingCount} running={run}
-                onRun={runPing} onStop={() => { if (run) { setPlaying(false); finishPing(run, cursor); } }} stats={lastStats} />
-              <div className="row">
-                <button className="btn small" onClick={() => { setFrames(clearL2(frames, cursor)); setCursor(cursor + 1); setRun(null); }} title="Empty every ARP cache and switch MAC table">Clear ARP &amp; MAC tables</button>
-                <span className="small muted">Learned so far: {Object.values(state.l2.arp).reduce((n, t) => n + Object.keys(t).length, 0)} ARP entries, {Object.values(state.l2.mac).reduce((n, t) => n + t.length, 0)} MAC table entries.</span>
-              </div>
-            </section>
-            <Explain frame={frame} index={cursor} total={frames.length} level={level} gated={gated} hideValues={teacher.on && teacher.hideValues} onUngate={() => setUngated(true)} />
-          </>
+  const lessonChipText = labInfo.exercise?.instructions ?? (scenario ? scenario.prediction.question : null);
+  const stage = (
+    <main className={`stage ${mode === 'compare' ? 'compare' : ''}`} aria-label="Network">
+      <div className="stage-canvas dots">
+        <Canvas
+          topo={curTopo} pos={pos} notes={notes} mode={mode} options={options} selected={sel} tool={tool} pendingLinkFrom={pendingLink}
+          anim={mode === 'compare' ? undefined : ev.anim} animKey={cursor} duration={Math.min(1200, interval * 0.75)} reducedMotion={reducedMotion}
+          routePath={routePath} sptPath={sptPath} focus={mode === 'compare' ? [] : ev.routers ?? []} showAddresses={showAddr} showGrid={showGrid}
+          view={view} onView={setView}
+          onSelect={(s) => { onSelect(s); if (s && !wide) setMobileTab('device'); }} onBackground={onBackground} onDevice={(id) => { onDevice(id); if (tool === 'select' && !wide) setMobileTab('device'); }} onMove={onMove}
+          onNoteChange={onNoteChange}
+          onNoteOpen={(id) => { setSel({ kind: 'note', id }); openTab('inspect'); setTimeout(() => (document.getElementById('note-text') as HTMLTextAreaElement | null)?.focus(), 50); }}
+          onPacketClick={() => { setPlaying(false); openTab('packet'); }}
+        />
+        <div className="overlay-top">
+          {lessonChipText ? (
+            <div className="lesson-chip">
+              <span className="eyebrow">{labInfo.exercise ? 'Exercise' : `Lesson ${scenario?.num}`}</span>
+              <span className="lesson-q">{lessonChipText}</span>
+              <button className="link-btn" onClick={() => openTab('scenario')}>Open task</button>
+            </div>
+          ) : <span />}
+          <div className="chip-group">
+            {(errors.length > 0 || warnings.length > 0) && (
+              <MenuButton className={`chip ${errors.length ? 'err' : 'warn'}`} ariaLabel="Configuration problems"
+                items={issues.slice(0, 12).map((i) => ({ label: `${i.severity === 'error' ? '✖' : '▲'} ${i.message}` }))}>
+                <Icon name="warn" size={15} /> {errors.length ? `${errors.length} error${errors.length > 1 ? 's' : ''}` : `${warnings.length} warning${warnings.length > 1 ? 's' : ''}`}
+              </MenuButton>
+            )}
+            <button className="chip" aria-pressed={showAddr} onClick={() => setShowAddr(!showAddr)}>Addresses</button>
+            <button className="chip" aria-pressed={follow} onClick={() => setFollow(!follow)} title="Select the device involved in each step">Follow</button>
+            {wide && (presenting
+              ? <button className="chip" onClick={stopPresenting}>Exit (Esc)</button>
+              : <button className="chip" onClick={startPresenting} title="Full-screen network for the classroom"><Icon name="present" size={15} /> Present</button>)}
+          </div>
+        </div>
+        {toolHint && <div className="tool-hint" role="status">{toolHint}</div>}
+        {notice && (
+          <div className={`toast ${notice.kind}`} role="status">
+            <span>{notice.text}</span>
+            <button className="icon-btn" onClick={() => setNotice(null)} aria-label="Dismiss message"><Icon name="close" size={14} /></button>
+          </div>
         )}
-        <Legend />
+        <div className="zoom-ctl" role="group" aria-label="Zoom">
+          <button onClick={() => zoomBy(1.25)} aria-label="Zoom in" title="Zoom in"><Icon name="plus" size={16} /></button>
+          <span className="zoom-pct" aria-live="polite">{Math.round(view.k * 100)}%</span>
+          <button onClick={() => zoomBy(1 / 1.25)} aria-label="Zoom out" title="Zoom out"><Icon name="minus" size={16} /></button>
+          <button onClick={() => setView(fitView(curTopo, pos, notes))} aria-label="Fit network to screen" title="Fit to screen"><Icon name="fit" size={16} /></button>
+        </div>
+        {stepsOpen && wide && mode !== 'compare' && (
+          <div className="steps-drawer">
+            <Timeline frames={frames} cursor={cursor} onJump={jump} hideFuture={oneAtATime} fill
+              actions={<button className="icon-btn" onClick={() => setStepsOpen(false)} aria-label="Close steps"><Icon name="close" size={16} /></button>} />
+          </div>
+        )}
       </div>
-    </section>
+      {wide && mode !== 'compare' && <div className="step-dock dots">{stepCard}</div>}
+      {wide && mode === 'compare' && <div className="compare-dock"><ComparePanel topo={applyPositions(topo, pos)} options={options} /></div>}
+    </main>
   );
 
-  const timelineSection = (
-    <Timeline
-      frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); if (run) finishPing(run, i); else setCursor(i); }} hideFuture={oneAtATime}
-      fill={wide || maxed === 'timeline'} collapsed={layout.timelineCollapsed && maxed !== 'timeline'}
-      actions={<PanelButtons id="timeline" maxed={maxed} onMax={setMaxed} {...mv} collapsed={layout.timelineCollapsed} onCollapse={() => patchLayout({ timelineCollapsed: !layout.timelineCollapsed })} />}
+  // ---------------------------------------------------------------- inspector content
+
+  const lessonContent = (
+    <div className="stack">
+      <label className="stack-label"><strong>Guided lesson</strong>
+        <select value={scenarioId ?? ''} onChange={(e) => { const sc = SCENARIOS.find((s) => s.id === e.target.value); if (sc) loadScenario(sc); else setScenarioId(null); }}>
+          <option value="">Free play (no lesson)</option>
+          {SCENARIOS.map((s) => <option key={s.id} value={s.id}>{s.num}. {s.title}</option>)}
+        </select>
+      </label>
+      {labInfo.exercise && (
+        <section className="card">
+          <h2>Exercise{labInfo.exercise.studentMode ? ' (student mode)' : ''}</h2>
+          {labInfo.exercise.instructions && <p>{labInfo.exercise.instructions}</p>}
+          <div className="row">
+            <button className="btn primary" onClick={() => setDialog('check')}>Check connectivity</button>
+            <button className="btn" onClick={resetExercise} title="Restore the configuration exactly as it was shared">Reset lab</button>
+          </div>
+        </section>
+      )}
+      {scenario && (scenario.mode === 'compare') === (mode === 'compare') && (
+        <ScenarioPanel sc={scenario} ctx={ctx} predicted={predicted} onPredict={setPredicted} onReset={() => loadScenario(scenario)} onQuick={quickAction} teacher={teacher.on && teacher.gate} />
+      )}
+      {!scenario && !labInfo.exercise && <p className="muted small">Choose a guided lesson to get an objective, a prediction question and an explanation based on what the simulation actually does.</p>}
+      <section className="card">
+        <div className="card-head"><h2>Teacher mode</h2>
+          <button className="btn small" aria-pressed={teacher.on} onClick={() => setTeacher({ ...teacher, on: !teacher.on })}>{teacher.on ? 'On' : 'Off'}</button></div>
+        {teacher.on && (
+          <div className="stack small">
+            <label><input type="checkbox" checked={teacher.gate} onChange={(e) => setTeacher({ ...teacher, gate: e.target.checked })} /> Hide explanations until a prediction is made</label>
+            <label><input type="checkbox" checked={teacher.oneAtATime} onChange={(e) => { setTeacher({ ...teacher, oneAtATime: e.target.checked }); setPlaying(false); }} /> One step at a time (no Play, future steps hidden)</label>
+            <label><input type="checkbox" checked={teacher.hideValues} onChange={(e) => setTeacher({ ...teacher, hideValues: e.target.checked })} /> Hide next hops and costs (click "?" to reveal)</label>
+            {scenario && <button className="btn small" onClick={() => loadScenario(scenario)}>Reset lesson</button>}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+
+  const settingsContent = (
+    <div className="stack">
+      <section className="card">
+        <h2>Explanations</h2>
+        <div className="segm" role="group" aria-label="Level">
+          <button aria-pressed={level === 'beginner'} onClick={() => setLevel('beginner')}>Beginner</button>
+          <button aria-pressed={level === 'advanced'} onClick={() => setLevel('advanced')}>Advanced</button>
+        </div>
+        <p className="small muted">Advanced adds administrative distance, MAC addresses, protocol details and extra settings.</p>
+      </section>
+      {mode !== 'compare' && <SettingsPanel mode={mode} options={options} level={level} topo={state.topo} onOptions={(o) => { setOptions(o); setDirty(true); rebuild(topo, mode, o, 'Protocol settings changed: the simulation restarted from time 0.'); }} />}
+      <section className="card stack small">
+        <h2>Display</h2>
+        <label><input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} /> Grid</label>
+        <label><input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} /> Snap devices to the grid</label>
+        <label><input type="checkbox" checked={reducedMotion} onChange={(e) => setReducedMotion(e.target.checked)} /> Reduce motion</label>
+        <label><input type="checkbox" checked={large} onChange={(e) => setLarge(e.target.checked)} /> Large text for projectors</label>
+      </section>
+      <Legend />
+      <button className="btn" onClick={() => setShowAssumptions(true)}>Model assumptions</button>
+    </div>
+  );
+
+  const deviceContent = selNote ? (
+    <NotePanel note={selNote} topo={curTopo} onChange={editNote}
+      onDuplicate={() => { remember(); const c = { ...selNote, id: `note-${newId().slice(0, 8)}`, x: selNote.x + 24, y: selNote.y + 24, locked: undefined }; setNotes([...notes, c]); setSel({ kind: 'note', id: c.id }); }}
+      onDelete={() => onDelete({ kind: 'note', id: selNote.id })} />
+  ) : mode === 'compare' ? (
+    <section className="card">
+      <h2>How to read the comparison</h2>
+      <p className="small">Each column is a real simulation of the same network. Static routing uses the static routes you configured (switch to Static to edit them). Pick a link to fail and compare how each method responds, and whether a person has to fix anything.</p>
+    </section>
+  ) : (
+    <Inspector
+      state={state} frames={frames} cursor={cursor} level={level} options={options} sel={sel} hideValues={teacher.on && teacher.hideValues}
+      changes={ev.changes ?? []} pingHop={ev.ping} selectedKey={selectedKey} onSelectKey={setSelectedKey}
+      onStructural={structural} onLink={onLink} onStatic={onStatic} onDelete={onDelete}
     />
   );
+  const packetContent = mode === 'compare' ? <p className="muted">Packets are shown in Static, Distance vector and Link state modes.</p> : <PacketInspector frames={frames} cursor={cursor} onJump={jump} />;
 
-  const showScenarioTab = !!scenario && (scenario.mode === 'compare') === (mode === 'compare');
-  const tabs: [DetailsTab, string][] = mode === 'compare'
-    ? [['inspect', 'About'], ...(showScenarioTab ? ([['scenario', 'Scenario']] as [DetailsTab, string][]) : [])]
-    : [['inspect', selNote ? 'Note' : 'Inspector'], ['packet', 'Packet'], ...(showScenarioTab ? ([['scenario', 'Scenario']] as [DetailsTab, string][]) : []), ['settings', 'Settings']];
-  const activeTab = tabs.some(([t]) => t === detailsTab) ? detailsTab : 'inspect';
-  const detailsCollapsed = layout.detailsCollapsed && maxed !== 'details' && mode !== 'compare';
-  const detailsSection = (
-    <section className="panel plain" aria-label="Inspector">
-      <PanelBar title="Inspector">
-        <PanelButtons id="details" maxed={maxed} onMax={setMaxed} {...mv} collapsed={detailsCollapsed} onCollapse={mode === 'compare' ? undefined : () => patchLayout({ detailsCollapsed: !layout.detailsCollapsed })} />
-      </PanelBar>
-      {!detailsCollapsed && (
-        <>
-          <div className="tabs details-tabs" role="tablist" aria-label="Inspector sections">
-            {tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={activeTab === k} onClick={() => setDetailsTab(k)}>{l}{k === 'packet' && frame.ev.packet ? ' •' : ''}</button>)}
-          </div>
-          <div className="panel-body">
-            {activeTab === 'scenario' && scenario && (
-              <ScenarioPanel sc={scenario} ctx={ctx} predicted={predicted} onPredict={setPredicted} onReset={() => loadScenario(scenario)} onQuick={quickAction} teacher={teacher.on && teacher.gate} />
-            )}
-            {activeTab === 'settings' && mode !== 'compare' && (
-              <SettingsPanel mode={mode} options={options} level={level} topo={state.topo} onOptions={(o) => { setOptions(o); setDirty(true); rebuild(topo, mode, o, 'Protocol settings changed: the simulation restarted from time 0.'); }} />
-            )}
-            {activeTab === 'packet' && mode !== 'compare' && <PacketInspector frames={frames} cursor={cursor} onJump={(i) => { setPlaying(false); if (run) finishPing(run, i); else setCursor(i); }} />}
-            {activeTab === 'inspect' && selNote && (
-              <NotePanel note={selNote} topo={curTopo} onChange={editNote}
-                onDuplicate={() => { remember(); const c = { ...selNote, id: `note-${newId().slice(0, 8)}`, x: selNote.x + 24, y: selNote.y + 24, locked: undefined }; setNotes([...notes, c]); setSel({ kind: 'note', id: c.id }); }}
-                onDelete={() => onDelete({ kind: 'note', id: selNote.id })} />
-            )}
-            {activeTab === 'inspect' && !selNote && mode !== 'compare' && (
-              <Inspector
-                state={state} frames={frames} cursor={cursor} level={level} options={options} sel={sel} hideValues={teacher.on && teacher.hideValues}
-                changes={frame.ev.changes ?? []} pingHop={frame.ev.ping} selectedKey={selectedKey} onSelectKey={setSelectedKey}
-                onStructural={structural} onLink={onLink} onStatic={onStatic} onDelete={onDelete}
-              />
-            )}
-            {activeTab === 'inspect' && !selNote && mode === 'compare' && (
-              <section className="card">
-                <h2>How to read the comparison</h2>
-                <p className="small">Each column is a real simulation of the same topology. Static routing uses whatever static routes are configured (switch to Static mode to edit them). Pick a link to fail and compare how each approach responds, and whether a person has to fix anything.</p>
-              </section>
-            )}
-          </div>
-        </>
-      )}
-    </section>
-  );
-
-  const sectionFor = (id: PanelId) => (id === 'canvas' ? canvasSection : id === 'sim' ? simSection : id === 'timeline' && mode !== 'compare' ? timelineSection : detailsSection);
-
-  const slotClass = (i: number, id: PanelId) =>
-    `slot ${moving && moving.over === i && moving.id !== id ? 'drop-target' : ''} ${moving?.id === id ? 'drag-source' : ''}`;
-
-  const renderColumn = (side: 'left' | 'right') => {
-    const [ti, bi] = side === 'left' ? [0, 1] : [2, 3];
-    const t = order[ti];
-    const b = order[bi];
-    const tv = visible(t);
-    const bv = visible(b);
-    const tc = collapsedOf(t);
-    const bc = collapsedOf(b);
-    const h = side === 'left' ? canvasH : timelineH;
-    const max = side === 'left' ? canvasMax : timelineMax;
-    const cssVar = side === 'left' ? '--canvas-h' : '--timeline-h';
-    const key = side === 'left' ? 'canvasH' : 'timelineH';
-    return (
-      <div className="wcol" ref={side === 'left' ? leftRef : rightRef}>
-        {tv && (
-          <div data-slot={ti} className={`${slotClass(ti, t)} ${tc ? 'slot-auto' : !bv || bc ? 'slot-fill' : side === 'left' ? 'slot-sized-l' : 'slot-sized-r'}`}>{sectionFor(t)}</div>
-        )}
-        {tv && bv && !tc && !bc && (
-          <Splitter
-            orientation="horizontal" label={`Divider between ${PANEL_NAMES[t]} and ${PANEL_NAMES[b]}`} value={h} min={minTop(t)} max={max}
-            onLive={(v) => setVar(cssVar, v)} onCommit={(v) => patchLayout({ [key]: v })} onReset={() => patchLayout({ [key]: DEFAULT_LAYOUT[key] })}
-          />
-        )}
-        {bv && <div data-slot={bi} className={`${slotClass(bi, b)} ${bc ? 'slot-auto' : 'slot-fill'}`}>{sectionFor(b)}</div>}
+  const TABS: [DetailsTab, string][] = [['inspect', selNote ? 'Note' : 'Device'], ['packet', 'Packet'], ['scenario', 'Lesson'], ['settings', 'Settings']];
+  const inspector = (
+    <aside className="inspector" aria-label="Inspector">
+      <div className="insp-tabs" role="tablist" aria-label="Inspector">
+        {TABS.map(([k, l]) => (
+          <button key={k} role="tab" aria-selected={detailsTab === k} onClick={() => setDetailsTab(k)}>
+            {l}{k === 'packet' && ev.packet && detailsTab !== 'packet' ? <span className="dot" aria-label="(packet in this step)" /> : null}
+          </button>
+        ))}
+        <span className="grow-1" />
+        <button className="icon-btn" onClick={() => patchLayout({ detailsCollapsed: true })} aria-label="Hide inspector" title="Hide inspector"><Icon name="panel" size={18} /></button>
       </div>
-    );
-  };
+      <div className="insp-body">
+        {detailsTab === 'inspect' && deviceContent}
+        {detailsTab === 'packet' && packetContent}
+        {detailsTab === 'scenario' && lessonContent}
+        {detailsTab === 'settings' && settingsContent}
+      </div>
+    </aside>
+  );
 
   const switchMode = (m: ViewMode) => {
     setMode(m);
@@ -890,143 +893,139 @@ export default function App() {
     rebuild(topo, m, options);
   };
 
-  const themeLabel = theme === 'system' ? 'Auto' : theme === 'light' ? 'Light' : 'Dark';
-  const exercise = labInfo.exercise;
+  const themeLabel = theme === 'system' ? 'Automatic' : theme === 'light' ? 'Light' : 'Dark';
+  const NEW_LABS: [string, string][] = [['three', '3 routers (simple)'], ['five', '5 routers (alternative paths)'], ['triangle', 'Triangle (weighted)'], ['switch', 'Switched LAN'], ['loopback', 'R1–R2–R3 with loopbacks'], ['empty', 'Empty canvas']];
+  const labMenu: MenuItem[] = [
+    { label: 'Save lab', hint: labInfo.inLibrary ? '' : 'in this browser', onSelect: saveLab },
+    { label: 'Save as / rename…', onSelect: () => setDialog('save') },
+    { label: 'Open lab…', onSelect: () => setDialog('open') },
+    { separator: true },
+    { heading: 'New lab' },
+    ...NEW_LABS.map(([k, l]) => ({ label: l, onSelect: () => newLab(k) })),
+    { separator: true },
+    { label: 'Import lab file…', onSelect: () => fileRef.current?.click() },
+    { label: 'Export lab file', onSelect: () => downloadLab(currentLab()) },
+  ];
+  const moreMenu: MenuItem[] = [
+    { label: 'Open lab…', onSelect: () => setDialog('open') },
+    { label: 'Import lab file…', onSelect: () => fileRef.current?.click() },
+    { label: 'Export lab file', onSelect: () => downloadLab(currentLab()) },
+    { separator: true },
+    { label: `Theme: ${themeLabel}`, hint: 'change', onSelect: () => setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system') },
+    { label: 'Teacher mode', checked: teacher.on, onSelect: () => { setTeacher({ ...teacher, on: !teacher.on }); openTab('scenario'); } },
+    { label: 'Large text for projectors', checked: large, onSelect: () => setLarge(!large) },
+    { label: 'Reduce motion', checked: reducedMotion, onSelect: () => setReducedMotion(!reducedMotion) },
+    { label: 'Reset panel size', onSelect: () => resetLayout() },
+    { separator: true },
+    { label: 'Model assumptions', onSelect: () => setShowAssumptions(true) },
+  ];
+
+  const MODES: [ViewMode, string, string][] = [['static', 'Static', 'Static'], ['dv', 'Distance vector', 'DV'], ['ls', 'Link state', 'LS'], ['compare', 'Compare', 'Compare']];
+  const header = (
+    <header className="hdr">
+      <div className="hdr-brand">
+        <Icon name="network" size={24} />
+        {wide && <span>Routing Visual Lab</span>}
+      </div>
+      <MenuButton className="lab-btn" ariaLabel={`Lab: ${labInfo.name}. Lab menu`} items={labMenu} align="left">
+        <span className="lab-btn-name">{labInfo.name}</span>
+        <span className={`lab-btn-state ${dirty ? 'unsaved' : ''}`}>{dirty ? 'Unsaved' : labInfo.inLibrary ? 'Saved' : 'Not saved'}</span>
+        <Icon name="chevron" size={14} />
+      </MenuButton>
+      {wide && (
+        <div className="hdr-center">
+          <div className="segm" role="group" aria-label="Routing method">
+            {MODES.map(([m, l]) => <button key={m} aria-pressed={mode === m} onClick={() => switchMode(m)}>{l}</button>)}
+          </div>
+        </div>
+      )}
+      {!wide && <span className="grow-1" />}
+      <div className="hdr-actions">
+        {run ? (
+          <div className="ping-status" role="status">
+            <span className="pulse-dot" aria-hidden />
+            {wide && <span><strong>Pinging</strong> {deviceName(curTopo, run.form.src)} → {dstText(run.form)}</span>}
+            <span className="muted">{run.total === Infinity ? `#${lastStats?.sent ?? 1}` : `${lastStats?.sent ?? 1} of ${run.total}`}</span>
+            <button className="mini-btn" onClick={() => { setPlaying(false); finishPing(run, cursor); }}>Stop</button>
+          </div>
+        ) : (
+          <div className="ping-anchor">
+            <button className="hbtn outline" data-ping-trigger aria-expanded={pingOpen} aria-haspopup="dialog" disabled={mode === 'compare'}
+              onClick={() => setPingOpen(!pingOpen)} title={mode === 'compare' ? 'Ping is available in Static, Distance vector and Link state' : 'Send a ping'}>
+              <Icon name="ping" size={17} />{wide && 'Ping'}
+            </button>
+            {pingOpen && (
+              <PingPopover topo={curTopo} form={pingForm} setForm={setPingForm} count={pingCount} setCount={setPingCount} sheet={!wide}
+                onRun={() => { runPing(); if (!wide) setMobileTab('step'); }} onClose={() => setPingOpen(false)} onClearL2={clearL2Now} l2Text={l2Text} />
+            )}
+          </div>
+        )}
+        {wide && lastStats && !run && <span className="last-ping small muted">Last ping: {lastStats.received}/{lastStats.sent} replies</span>}
+        <button className="hbtn primary" onClick={() => setDialog('share')}><Icon name="share" size={17} />{wide && 'Share'}</button>
+        <MenuButton className="hbtn icon" ariaLabel="More: open, import, export, theme, teacher mode" items={moreMenu}><Icon name="more" size={18} /></MenuButton>
+      </div>
+      <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ''; }} />
+    </header>
+  );
+
+  const MOBILE_TABS: [MobileTab, string, string][] = [['step', 'Step', 'network'], ['device', selNote ? 'Note' : 'Device', 'table'], ['packet', 'Packet', 'ping'], ['lesson', 'Lesson', 'book'], ['steps', 'Steps', 'steps'], ['settings', 'More', 'settings']];
 
   return (
-    <div className={`app ${wide && !presenting ? 'app-wide' : ''} ${presenting ? 'app-present' : ''}`}>
-      {!presenting && <header className="topbar">
-        <div className="brand">
-          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth="2"><circle cx="5" cy="12" r="3" /><circle cx="19" cy="5" r="3" /><circle cx="19" cy="19" r="3" /><path d="M8 11 16 6M8 13l8 5" /></svg>
-          <span>Routing Visual Lab</span>
-        </div>
-        <div className="lab-name" title={labInfo.inLibrary ? 'Saved in this browser' : 'Not saved in the library yet'}>
-          <span className="small muted">Lab</span> <strong>{labInfo.name}</strong>{dirty && <span className="dirty" aria-label="unsaved changes"> •</span>}
-          {exercise?.studentMode && <span className="pill">student exercise</span>}
-        </div>
-        <div className="group lab-actions" role="toolbar" aria-label="Lab">
-          <select aria-label="New lab" value="" onChange={(e) => e.target.value && newLab(e.target.value)} title="Start a new lab">
-            <option value="">＋ New Lab…</option>
-            <option value="three">3 routers (simple)</option>
-            <option value="five">5 routers (alternative paths)</option>
-            <option value="triangle">Triangle (weighted)</option>
-            <option value="switch">Switched LAN (2 routers, switch, 3 PCs)</option>
-            <option value="loopback">R1–R2–R3 with loopbacks</option>
-            <option value="empty">Empty canvas</option>
-          </select>
-          <button className="btn" onClick={() => setDialog('open')} title="Open a saved lab or import a lab file">📂 Open Lab</button>
-          <button className="btn" onClick={saveLab} title="Save this lab in this browser">💾 Save Lab</button>
-          <button className="btn" onClick={() => setDialog('share')} title="Share with students: lab file, link or QR code">⇪ Share Lab</button>
-          <button className="btn" onClick={() => fileRef.current?.click()} title="Import a lab file (.json)">⬆ Import</button>
-          <button className="btn" onClick={() => downloadLab(currentLab())} title="Export this lab as a JSON file">⬇ Export</button>
-          <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ''; }} />
-          <button className="btn icon" onClick={undo} disabled={!undoStack.current.length} title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
-          <button className="btn icon" onClick={redo} disabled={!redoStack.current.length} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
-          <button className="btn" onClick={() => setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system')} title="Theme: automatic, light or dark" aria-label={`Theme: ${themeLabel}. Click to change.`}>◐ {themeLabel}</button>
-        </div>
-        <div className="break" />
-        <div className="seg" role="group" aria-label="Routing mode">
-          {([['static', 'Static'], ['dv', 'Distance Vector'], ['ls', 'Link State'], ['compare', 'Compare']] as const).map(([m, l]) => (
-            <button key={m} aria-pressed={mode === m} onClick={() => switchMode(m)}>{l}</button>
-          ))}
-        </div>
-        <div className="seg" role="group" aria-label="Level">
-          <button aria-pressed={level === 'beginner'} onClick={() => setLevel('beginner')}>Beginner</button>
-          <button aria-pressed={level === 'advanced'} onClick={() => setLevel('advanced')}>Advanced</button>
-        </div>
-        <label>
-          <span className="sr-only">Scenario</span>
-          <select value={scenarioId ?? ''} onChange={(e) => { const sc = SCENARIOS.find((s) => s.id === e.target.value); if (sc) loadScenario(sc); else setScenarioId(null); }} aria-label="Guided scenario">
-            <option value="">Free play (no scenario)</option>
-            {SCENARIOS.map((s) => <option key={s.id} value={s.id}>{s.num}. {s.title}</option>)}
-          </select>
-        </label>
-        <div className="spacer" />
-        <button className="btn menu-toggle" aria-expanded={menuOpen} aria-controls="topbar-tools" onClick={() => setMenuOpen(!menuOpen)}>☰ Menu</button>
-        <div className={`group ${menuOpen ? 'open' : ''}`} id="topbar-tools">
-          <button className="btn" aria-pressed={teacher.on} onClick={() => setTeacher({ ...teacher, on: !teacher.on })}>🎓 Teacher</button>
-          <button className="btn" aria-pressed={large} onClick={() => setLarge(!large)} title="Enlarge labels and tables for projection">⛶ Projector</button>
-          <button className="btn" aria-pressed={reducedMotion} onClick={() => setReducedMotion(!reducedMotion)} title="Turn packet movement on or off">Reduce motion</button>
-          <button className="btn" onClick={() => { resetLayout(); setMaxed(null); }} title="Restore the default panel sizes">▦ Reset layout</button>
-          <button className="btn" onClick={() => setShowAssumptions(true)}>ⓘ Model assumptions</button>
-        </div>
-      </header>}
-
-      {teacher.on && !presenting && (
-        <div className="card teacher-panel" role="region" aria-label="Teacher controls">
-          <div className="row">
-            <strong>Teacher Mode:</strong>
-            <label><input type="checkbox" checked={teacher.gate} onChange={(e) => setTeacher({ ...teacher, gate: e.target.checked })} /> Hide explanations until a prediction is made</label>
-            <label><input type="checkbox" checked={teacher.oneAtATime} onChange={(e) => { setTeacher({ ...teacher, oneAtATime: e.target.checked }); setPlaying(false); }} /> Reveal one event at a time</label>
-            <label><input type="checkbox" checked={teacher.hideValues} onChange={(e) => setTeacher({ ...teacher, hideValues: e.target.checked })} /> Hide next hops &amp; costs (click "?" to reveal)</label>
-            {scenario && <button className="btn small" onClick={() => loadScenario(scenario)}>↺ Reset scenario now</button>}
+    <div className={`app shell ${wide ? 'wide' : 'narrow'} ${presenting ? 'presenting' : ''}`}>
+      {!presenting && header}
+      {!wide && !presenting && (
+        <div className="mode-strip">
+          <div className="segm" role="group" aria-label="Routing method">
+            {MODES.map(([m, , s]) => <button key={m} aria-pressed={mode === m} onClick={() => switchMode(m)}>{s}</button>)}
           </div>
         </div>
       )}
-
-      {exercise && !presenting && (
-        <div className="card exercise-bar" role="region" aria-label="Student exercise">
-          <div className="row">
-            <strong>📝 Exercise{exercise.studentMode ? ' (Student Exercise Mode)' : ''}</strong>
-            {exercise.instructions && <span className="grow">{exercise.instructions}</span>}
-            <button className="btn small" onClick={() => setDialog('check')}>✔ Check connectivity</button>
-            <button className="btn small" onClick={resetExercise} title="Restore the configuration exactly as it was shared">↺ Reset Lab</button>
-          </div>
-        </div>
-      )}
-
-      {!presenting && (notice || errors.length > 0 || warnings.length > 0) && (
-        <div className="banners">
-          {notice && (
-            <div className={`banner ${notice.kind}`} role="status">
-              <span>{notice.text}</span>
-              <button className="btn small x" onClick={() => setNotice(null)} aria-label="Dismiss message">✕</button>
-            </div>
+      {wide ? (
+        <div className="shell-body" ref={setShell} style={{ '--sidebar': `${sidebarW}px` } as React.CSSProperties}>
+          {!presenting && rail}
+          {stage}
+          {!presenting && !layout.detailsCollapsed && (
+            <>
+              <Splitter
+                orientation="vertical" invert label="Divider between the network and the inspector" value={sidebarW} min={MIN.sidebar} max={sidebarMax}
+                onLive={(v) => setVar('--sidebar', v)} onCommit={(v) => patchLayout({ sidebar: v })} onReset={() => patchLayout({ sidebar: DEFAULT_LAYOUT.sidebar })}
+              />
+              {inspector}
+            </>
           )}
-          {(errors.length > 0 || warnings.length > 0) && (
-            <details className={`banner ${errors.length ? 'err' : 'warn'}`}>
-              <summary>{errors.length ? `✖ ${errors.length} configuration error${errors.length > 1 ? 's' : ''}` : ''}{errors.length && warnings.length ? ' · ' : ''}{warnings.length ? `▲ ${warnings.length} warning${warnings.length > 1 ? 's' : ''}` : ''} — click for details</summary>
-              {issues.map((i, k) => <p key={k} className={`issue ${i.severity}`}>{i.message}</p>)}
-            </details>
+          {!presenting && layout.detailsCollapsed && (
+            <button className="show-insp" onClick={() => patchLayout({ detailsCollapsed: false })} aria-label="Show inspector" title="Show inspector"><Icon name="panel" size={18} /></button>
           )}
         </div>
-      )}
-
-      {presenting ? (
-        <main className="present">
-          {canvasSection}
-          <div className="present-bar card">
-            {mode !== 'compare' && controls}
-            <span className="present-title">{mode !== 'compare' ? frame.ev.title : 'Compare mode'}</span>
-            <button className="btn" onClick={stopPresenting}>✕ Exit full screen (Esc)</button>
-          </div>
-        </main>
-      ) : maxed ? (
-        <main className="workspace single" ref={wsRef}>
-          {sectionFor(maxed)}
-        </main>
-      ) : wide ? (
-        <main
-          className="workspace"
-          ref={setWorkspace}
-          style={{ '--sidebar': `${sidebarW}px`, '--canvas-h': `${canvasH}px`, '--timeline-h': `${timelineH}px` } as React.CSSProperties}
-        >
-          {renderColumn('left')}
-          <Splitter
-            orientation="vertical" invert label="Divider between the left and right columns" value={sidebarW} min={MIN.sidebar} max={sidebarMax}
-            onLive={(v) => setVar('--sidebar', v)} onCommit={(v) => patchLayout({ sidebar: v })} onReset={() => patchLayout({ sidebar: DEFAULT_LAYOUT.sidebar })}
-          />
-          {renderColumn('right')}
-        </main>
       ) : (
-        <main className="stacked">
-          {order.map((id, i) => visible(id) && <div key={id} data-slot={i} className={slotClass(i, id)}>{sectionFor(id)}</div>)}
-        </main>
+        <div className="mobile-body">
+          {rail}
+          {stage}
+          <div className="mobile-panel">
+            {mobileTab === 'step' && (mode === 'compare' ? <ComparePanel topo={applyPositions(topo, pos)} options={options} /> : stepCard)}
+            {mobileTab === 'device' && deviceContent}
+            {mobileTab === 'packet' && packetContent}
+            {mobileTab === 'lesson' && lessonContent}
+            {mobileTab === 'steps' && mode !== 'compare' && <Timeline frames={frames} cursor={cursor} onJump={(i) => { jump(i); setMobileTab('step'); }} hideFuture={oneAtATime} />}
+            {mobileTab === 'settings' && settingsContent}
+          </div>
+          <nav className="bottom-nav" aria-label="Sections">
+            {MOBILE_TABS.map(([k, l, icon]) => (
+              <button key={k} aria-current={mobileTab === k ? 'page' : undefined} onClick={() => setMobileTab(k)}>
+                <Icon name={icon} size={20} /><span>{l}</span>
+              </button>
+            ))}
+          </nav>
+        </div>
       )}
-      {moving && (
-        <div className="move-ghost" style={{ left: moving.x + 14, top: moving.y + 14 }} aria-hidden>
-          Move {PANEL_NAMES[moving.id]}
-          {moving.over !== null && order[moving.over] !== moving.id ? ` → swap with ${PANEL_NAMES[order[moving.over]]}` : ''}
+      {presenting && (
+        <div className="present-bar">
+          <button className="tbtn" onClick={() => { setPlaying(false); setCursor(Math.max(0, cursor - 1)); }} aria-label="Previous step"><Icon name="prev" size={16} /></button>
+          {playing ? <button className="tbtn primary" onClick={() => setPlaying(false)}><Icon name="pause" size={14} /> Pause</button>
+            : <button className="tbtn primary" onClick={() => setPlaying(true)} disabled={!(run || cursor < frames.length - 1)}><Icon name="play" size={14} /> Play</button>}
+          <button className="tbtn" onClick={() => { setPlaying(false); advance(); }} aria-label="Next step"><Icon name="next" size={16} /></button>
+          <span className="present-title">{mode !== 'compare' ? ev.title : 'Compare'}</span>
+          <button className="tbtn" onClick={stopPresenting}>Exit (Esc)</button>
         </div>
       )}
       {showAssumptions && <Assumptions onClose={() => setShowAssumptions(false)} />}
@@ -1043,7 +1042,7 @@ export default function App() {
             {dialog.shared.exercise?.instructions && <p className="banner info">{dialog.shared.exercise.instructions}</p>}
             <p className="small muted">It opens as your own copy. {dirty ? 'Your current work will be kept in Open Lab.' : ''}</p>
             <div className="row">
-              <button className="btn primary" autoFocus onClick={() => { const kept = keepCurrentWork(); const lab = { ...dialog.shared, id: newId() }; setDialog(null); loadLab(lab, { inLibrary: false }, `Opened the shared lab "${lab.name}". Use Save Lab to keep it in this browser.${kept}`); }}>Open shared lab</button>
+              <button className="btn primary" autoFocus onClick={() => { const kept = keepCurrentWork(); const lab = { ...dialog.shared, id: newId() }; setDialog(null); loadLab(lab, { inLibrary: false }, `Opened the shared lab "${lab.name}". Use Save lab to keep it in this browser.${kept}`); }}>Open shared lab</button>
               <button className="btn" onClick={() => setDialog(null)}>Cancel</button>
             </div>
           </div>

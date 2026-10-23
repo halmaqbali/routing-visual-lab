@@ -395,7 +395,7 @@ export function Canvas(p: Props) {
           <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)" />
         </marker>
         <pattern id="grid" width={GRID} height={GRID} patternUnits="userSpaceOnUse">
-          <path d={`M ${GRID} 0 L 0 0 0 ${GRID}`} fill="none" stroke="var(--grid)" strokeWidth={1} />
+          <circle cx={1} cy={1} r={1.1} fill="var(--grid-dot)" />
         </pattern>
       </defs>
       <rect data-bg="1" x={0} y={0} width={VIEW_W} height={VIEW_H} fill="transparent" />

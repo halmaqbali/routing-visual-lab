@@ -33,6 +33,13 @@ The production build is a static site (relative paths), so `dist/` can be copied
 
 ## Features
 
+**Interface**
+- **Header:** the lab menu (save, open, new, import, export), the routing method switcher, **Ping**, **Share**, and a ⋯ menu for the theme, Teacher mode, projector text, reduced motion and the model assumptions.
+- **Tool rail on the left:** Select, Router, PC, Switch, Cable, Note, Undo/Redo and Delete.
+- **Step card under the network:** what happened in the current step, in plain English, with Play / Previous / Next, a progress slider, speed, Details (the calculation tables) and **All steps** (the event timeline drawer).
+- **Inspector on the right**, with four tabs: **Device** (routing table, interfaces, static routes, ARP/MAC tables, CLI), **Packet** (Packet Inspector), **Lesson** (guided lessons, exercises, Teacher mode) and **Settings** (level, protocol options, display, legend). It can be resized (drag or double-click the divider) and hidden.
+- **On phones:** the network on top, the content below, and a bottom tab bar (Step, Device, Packet, Lesson, Steps, More).
+
 **Labs: save, share, exercises**
 - **New / Open / Save / Export / Import Lab.** A lab file holds the whole network: device positions, names, interfaces (IPs, prefixes, loopbacks), link costs and states, static routes, PC gateways, routing-protocol settings, canvas notes, the mode and level, and the timeline position with a routing-table snapshot.
 - **Saved labs library** in the browser: open, rename, duplicate, delete and export. The current work is autosaved, so a refresh loses nothing.

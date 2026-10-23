@@ -18,8 +18,8 @@ Each part maps to something on screen:
 ## Before class
 
 1. Run `npm install`, then `npm run dev` (or put the built `dist/` folder on a web server).
-2. Open the app on the projector and turn on **Projector** (bigger text).
-3. Turn on **Teacher** and choose your options:
+2. Open the app on the projector and choose ⋯ → **Large text for projectors**. **Present** (top right of the network) shows the network full screen.
+3. Open the **Lesson** tab (or ⋯ → Teacher mode), switch Teacher mode on and choose your options:
    - **Hide explanations until a prediction is made**: students commit to an answer first.
    - **Reveal one event at a time**: turns off Play and End, and hides future events in the timeline.
    - **Hide next hops & costs**: shows a "?" that you click to reveal. Good for "what will R2's cost be?" questions.

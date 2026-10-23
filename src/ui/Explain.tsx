@@ -30,26 +30,28 @@ interface Props {
   total: number;
   level: Level;
   gated: boolean;
+  /** Only the detail tables (the step card already shows the category, title and explanation). */
+  compact?: boolean;
   hideValues: boolean;
   onUngate: () => void;
 }
 
-export function Explain({ frame, index, total, level, gated, hideValues, onUngate }: Props) {
+export function Explain({ frame, index, total, level, gated, hideValues, onUngate, compact }: Props) {
   const ev = frame.ev;
   const cat = CATEGORY[ev.category];
   const topo = frame.state.topo;
   const n = (id: string) => deviceName(topo, id);
   const hop = ev.ping;
   return (
-    <section className="card explain" aria-live="polite" aria-label="Explanation">
-      <div className="card-head">
+    <section className={compact ? 'explain compact' : 'card explain'} aria-live={compact ? undefined : 'polite'} aria-label="Explanation details">
+      {!compact && <><div className="card-head">
         <div className="row">
           <span className={`cat ${ev.category}`} aria-hidden><span>{cat.short}</span></span>
           <span className="small muted">{cat.label}</span>
         </div>
         <span className="small muted">Event {index + 1} of {total} · t = {ev.time}</span>
       </div>
-      <h3>{ev.title}</h3>
+      <h3>{ev.title}</h3></>}
       {gated ? (
         <div className="gate">
           <p><strong>Make your prediction first.</strong> The explanation is hidden in Teacher Mode until you answer the scenario's prediction question.</p>
@@ -57,7 +59,7 @@ export function Explain({ frame, index, total, level, gated, hideValues, onUngat
         </div>
       ) : (
         <>
-          <p className="lead">{ev.explain}</p>
+          {!compact && <p className="lead">{ev.explain}</p>}
           {hop && (
             <div className="stack">
               <div className="tbl-wrap">

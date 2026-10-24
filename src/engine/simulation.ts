@@ -160,7 +160,7 @@ export function buildPingFrames(at: SimState, req: PingRequest, label = 'Ping'):
   }
   const endState = { ...at, l2: result.l2 };
   out.push(frame(endState, {
-    kind: 'ping-result', category: 'data',
+    kind: 'ping-result', category: 'data', outcome: result.success ? 'ok' : 'fail',
     title: `${label}: ${result.success ? 'reply received' : result.outcomeText}`,
     explain: result.success
       ? `Success: the echo request reached ${dstText} and the echo reply came back to ${n(req.src)}. Request path: ${result.requestPath.map(n).join(' → ')}. Reply path: ${result.replyPath.map(n).join(' → ')}.`
@@ -180,7 +180,7 @@ export function pingStatsFrame(at: SimState, srcName: string, dstText: string, s
         ? 'No replies came back. Step back through the pings to find where each one was dropped.'
         : 'Some pings failed and some succeeded — the routing tables changed between them (for example while the protocol was converging).';
   return frame(at, {
-    kind: 'ping-stats', category: 'data',
+    kind: 'ping-stats', category: 'data', outcome: received === sent ? 'ok' : 'fail',
     title: `Ping statistics: ${sent} sent, ${received} received, ${pct}% loss`,
     explain: `Ping ${srcName} → ${dstText} finished, like the summary at the end of the ping command: ${sent} echo request${sent === 1 ? '' : 's'} sent, ${received} repl${received === 1 ? 'y' : 'ies'} received, ${lost} lost (${pct}% packet loss). ${verdict}`,
   });

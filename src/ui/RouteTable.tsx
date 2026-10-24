@@ -79,11 +79,11 @@ export function RouteTable(p: Props) {
               return (
                 <tr key={k + (isRemoved ? '-old' : '')} className={cls} onClick={() => p.onSelectKey?.(p.selectedKey === k ? null : k)} tabIndex={p.onSelectKey ? 0 : undefined}
                   onKeyDown={(e) => { if (e.key === 'Enter') p.onSelectKey?.(p.selectedKey === k ? null : k); }}>
-                  <td><span className="src" title={src.name}>{src.code}</span></td>
+                  <td><span className={`src ${r.source === 'dv' ? 'dv' : r.source === 'ls' ? 'ls' : ''}`} title={src.name}>{src.code}</span></td>
                   <td className="mono">
                     {k}
                     {c && <span className={`badge ${c.kind === 'added' ? 'new' : c.kind === 'removed' ? 'del' : 'chg'}`}>{c.kind === 'added' ? 'NEW' : c.kind === 'removed' ? 'REMOVED' : 'CHANGED'}</span>}
-                    {p.chosenKey === k && <span className="badge new">SELECTED</span>}
+                    {p.chosenKey === k && <span className="badge pick">SELECTED</span>}
                   </td>
                   <td className="mono">
                     <Quiz hide={p.hideValues && r.source !== 'connected'}>

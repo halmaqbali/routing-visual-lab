@@ -168,7 +168,7 @@ export function LsRouterView({ state, router }: { state: SimState; router: strin
                 <tbody>{st.neighbors.map((x) => (
                   <tr key={x.linkId} className={x.state === 'Full' ? '' : 'match'}>
                     <td>{n(x.router)}</td><td className="mono">{x.rid}</td>
-                    <td><strong>{x.state}</strong></td><td>{role(x.router, x.localIface)}</td><td>{ifname(x.localIface)} · cost {x.cost}</td>
+                    <td><NbrState s={x.state} /></td><td><Role r={role(x.router, x.localIface)} /></td><td>{ifname(x.localIface)} · cost {x.cost}</td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -212,4 +212,14 @@ export function LsRouterView({ state, router }: { state: SimState; router: strin
       {tab === 'spf' && (st.spf ? <SpfTable topo={topo} spf={st.spf} step={view} /> : <p className="muted small">{n(router)} has not run SPF yet. Keep stepping.</p>)}
     </div>
   );
+}
+
+function NbrState({ s }: { s: string }) {
+  const cls = s === 'Full' ? 'full' : s === 'Init' || s === '2-Way' ? 'mid' : s === 'Down' ? 'down' : 'sync';
+  const mark = s === 'Full' ? '✓' : s === 'Down' ? '✕' : s === 'Init' ? '◔' : s === '2-Way' ? '◐' : '⟳';
+  return <span className={`nst ${cls}`}><span aria-hidden>{mark}</span>{s}</span>;
+}
+
+function Role({ r }: { r: string }) {
+  return r === 'point-to-point' ? <span className="muted">point-to-point</span> : <span className={`role ${r === 'DR' ? 'dr' : r === 'BDR' ? 'bdr' : ''}`}>{r}</span>;
 }

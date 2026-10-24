@@ -212,6 +212,8 @@ export interface SimEvent {
   lsa?: { lsa: Lsa; installed: boolean };
   spf?: { router: string; step: number; total: number };
   ping?: import('./ping').HopStep;
+  /** Success or failure of this step (finished ping, statistics), shown in green / red. */
+  outcome?: 'ok' | 'fail';
   /** What the Packet Inspector shows for the packet in this event. */
   packet?: PacketView;
 }

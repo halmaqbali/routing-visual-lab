@@ -10,7 +10,7 @@ import { SCENARIOS, type Scenario } from '../scenarios';
 import { coreOf, LAB_FORMAT, LAB_VERSION, mergeOptions, newId, parseLabText, type Lab, type LabCore, type Note } from '../lab/lab';
 import { LabLibrary } from '../lab/library';
 import { decodeLab, labCodeFromHash } from '../lab/share';
-import { applyTheme, loadTheme, saveTheme, type ThemePref } from '../lab/theme';
+import { applyTheme, loadTheme, saveTheme, type ThemePref, applyPalette, loadPalette, savePalette, type PalettePref } from '../lab/theme';
 import { Canvas, DEFAULT_VIEW, fitView, GRID, VIEW_H, VIEW_W, type DirLink, type Sel, type Tool, type View } from './Canvas';
 import { Inspector } from './Inspector';
 import { Explain } from './Explain';
@@ -33,6 +33,19 @@ type MobileTab = 'step' | 'device' | 'packet' | 'lesson' | 'steps' | 'settings';
 
 const simModeOf = (m: ViewMode): Mode => (m === 'compare' ? 'static' : m);
 const OSPF_MSGS: [string, string][] = [['Hello', 'find neighbours'], ['DBD', 'list LSA headers'], ['LSR', 'ask for LSAs'], ['LSU', 'carry LSAs'], ['LSAck', 'confirm receipt']];
+/** Outcome of a step, shown in green / red: a finished ping, a drop, convergence, a lost neighbour or update. */
+function eventTone(ev: Frame['ev']): 'ok' | 'fail' | undefined {
+  if (ev.outcome) return ev.outcome;
+  if (ev.anim?.drop) return 'fail';
+  if (ev.kind.endsWith('converged')) return 'ok';
+  if (['ls-dead', 'ls-lost', 'dv-lost', 'dv-timeout'].includes(ev.kind)) return 'fail';
+  return undefined;
+}
+/** Color of the dashed ring around the devices involved in a step. */
+function stepColor(ev: Frame['ev'], tone: 'ok' | 'fail' | undefined): string {
+  if (tone) return tone === 'ok' ? 'var(--ok)' : 'var(--fail)';
+  return ev.category === 'control' ? 'var(--c-dv)' : ev.category === 'lsa' || ev.category === 'spf' ? 'var(--c-ospf)' : ev.category === 'data' ? 'var(--c-data)' : 'var(--fg)';
+}
 const startCursor = (m: ViewMode, f: Frame[]) => (simModeOf(m) === 'static' ? f.length - 1 : 0);
 
 /** Follow next hops from a router towards a network, for highlighting a selected route. */
@@ -115,6 +128,7 @@ export default function App() {
   const [detailsTab, setDetailsTab] = useState<DetailsTab>('inspect');
   const [dialog, setDialog] = useState<null | 'open' | 'share' | 'save' | 'check' | { shared: Lab }>(null);
   const [theme, setTheme] = useState<ThemePref>(() => loadTheme(typeof localStorage !== 'undefined' ? localStorage : null));
+  const [palette, setPalette] = useState<PalettePref>(() => loadPalette(typeof localStorage !== 'undefined' ? localStorage : null));
   const undoStack = useRef<Snapshot[]>([]);
   const redoStack = useRef<Snapshot[]>([]);
   const [, setHistoryTick] = useState(0);
@@ -148,6 +162,11 @@ export default function App() {
     applyTheme(document.documentElement, theme);
     saveTheme(typeof localStorage !== 'undefined' ? localStorage : null, theme);
   }, [theme]);
+
+  useEffect(() => {
+    applyPalette(document.documentElement, palette);
+    savePalette(typeof localStorage !== 'undefined' ? localStorage : null, palette);
+  }, [palette]);
 
   function applyPositions(t: Topology, p: Record<string, { x: number; y: number }>): Topology {
     const c = structuredClone(t);
@@ -422,7 +441,7 @@ export default function App() {
 
   /** Start fresh: the default 3-router lab with every setting back to its default. Saved labs are kept. */
   const startFresh = () => {
-    if (!confirm('Start fresh? This loads the default 3-router lab and resets every setting (mode, simulation options, theme, view, panels, ping). Labs saved in Open Lab are kept.')) return;
+    if (!confirm('Start fresh? This loads the default 3-router lab and resets every setting (mode, simulation options, theme and colors, view, panels, ping). Labs saved in Open Lab are kept.')) return;
     const kept = keepCurrentWork();
     const now = new Date().toISOString();
     loadLab(
@@ -446,6 +465,7 @@ export default function App() {
     setSnap(true);
     setReducedMotion(typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches);
     setTheme('system');
+    setPalette('color');
     resetLayout();
     setDetailsTab('inspect');
     setMobileTab('step');
@@ -716,11 +736,12 @@ export default function App() {
   // Only count pings whose animation has finished, so the counter never gives away the current ping's result.
   const inFlight = !!run && run.waitAt === null && cursor <= run.endIndex;
   const done = run ? { sent: run.sent - (inFlight ? 1 : 0), received: run.received - (inFlight && run.lastOk ? 1 : 0) } : { sent: 0, received: 0 };
+  const tone = eventTone(ev);
   const CAT_LABEL: Record<string, string> = { config: 'Configuration', control: 'Routing update', lsa: 'Link-state message', spf: 'Shortest-path calculation', data: 'Data packet', info: 'Information' };
   const stepCard = (
     <section className={`step-card ${wide ? '' : 'flat'}`} aria-label="Current step">
       <div className="step-meta">
-        <span className={`cat-tag ${ev.category}`}>{ev.category === 'data' && <Icon name="ping" size={13} />}{CAT_LABEL[ev.category]}</span>
+        <span className={`cat-tag ${ev.category} ${tone ? `tone-${tone}` : ''}`}>{tone === 'ok' ? '✓ ' : tone === 'fail' ? '✕ ' : ''}{ev.category === 'data' && !tone && <Icon name="ping" size={13} />}{CAT_LABEL[ev.category]}</span>
         <span className="muted">Step {cursor + 1} of {frames.length} · t = {ev.time}</span>
         {run && <span className="run-badge">{run.total === Infinity ? '∞ Continuous ping' : 'Ping'} {run.sent}{run.total !== Infinity ? ` of ${run.total}` : ''}{done.sent > 0 ? ` · ${done.sent} done · ${done.received} replied` : ''}</span>}
         <span className="grow-1" />
@@ -774,7 +795,7 @@ export default function App() {
         <Canvas
           topo={curTopo} pos={pos} notes={notes} mode={mode} options={options} selected={sel} tool={tool} pendingLinkFrom={pendingLink}
           anim={mode === 'compare' ? undefined : ev.anim} animKey={cursor} duration={Math.min(1200, interval * 0.75)} reducedMotion={reducedMotion}
-          routePath={routePath} sptPath={sptPath} focus={mode === 'compare' ? [] : ev.routers ?? []} showAddresses={showAddr} showGrid={showGrid}
+          routePath={routePath} sptPath={sptPath} focus={mode === 'compare' ? [] : ev.routers ?? []} focusColor={stepColor(ev, tone)} showAddresses={showAddr} showGrid={showGrid}
           view={view} onView={setView}
           onSelect={(s) => { onSelect(s); if (s && !wide) setMobileTab('device'); }} onBackground={onBackground} onDevice={(id) => { onDevice(id); if (tool === 'select' && !wide) setMobileTab('device'); }} onMove={onMove}
           onNoteChange={onNoteChange}
@@ -809,7 +830,7 @@ export default function App() {
             {OSPF_MSGS.map(([k, d]) => {
               const on = ev.anim?.style === 'ospf' && ev.anim.label === k;
               return (
-                <span key={k} className={`ospf-legend-item ${on ? 'on' : ''}`} aria-current={on ? 'step' : undefined} title={d}>
+                <span key={k} className={`ospf-legend-item ${on ? 'on' : ''} ${k === 'DBD' || k === 'LSR' ? 'dash' : ''}`} aria-current={on ? 'step' : undefined} title={d}>
                   <b>{k}</b>{wide && <span>{d}</span>}
                 </span>
               );
@@ -969,6 +990,7 @@ export default function App() {
     { label: 'Export lab file', onSelect: () => downloadLab(currentLab()) },
     { separator: true },
     { label: `Theme: ${themeLabel}`, hint: 'change', onSelect: () => setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system') },
+    { label: 'Monochrome (black & white)', hint: 'for printing', checked: palette === 'mono', onSelect: () => setPalette(palette === 'mono' ? 'color' : 'mono') },
     { label: 'Teacher mode', checked: teacher.on, onSelect: () => { setTeacher({ ...teacher, on: !teacher.on }); openTab('scenario'); } },
     { label: 'Large text for projectors', checked: large, onSelect: () => setLarge(!large) },
     { label: 'Reduce motion', checked: reducedMotion, onSelect: () => setReducedMotion(!reducedMotion) },
@@ -993,7 +1015,7 @@ export default function App() {
       {wide && (
         <div className="hdr-center">
           <div className="segm" role="group" aria-label="Routing method">
-            {MODES.map(([m, l]) => <button key={m} aria-pressed={mode === m} onClick={() => switchMode(m)}>{l}</button>)}
+            {MODES.map(([m, l]) => <button key={m} className={`m-${m}`} aria-pressed={mode === m} onClick={() => switchMode(m)}><span className="mdot" aria-hidden />{l}</button>)}
           </div>
         </div>
       )}
@@ -1034,7 +1056,7 @@ export default function App() {
       {!wide && !presenting && (
         <div className="mode-strip">
           <div className="segm" role="group" aria-label="Routing method">
-            {MODES.map(([m, , s]) => <button key={m} aria-pressed={mode === m} onClick={() => switchMode(m)}>{s}</button>)}
+            {MODES.map(([m, , s]) => <button key={m} className={`m-${m}`} aria-pressed={mode === m} onClick={() => switchMode(m)}><span className="mdot" aria-hidden />{s}</button>)}
           </div>
         </div>
       )}

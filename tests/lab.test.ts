@@ -5,7 +5,7 @@ import { DEFAULT_OPTIONS } from '../src/model/types';
 import { coreOf, makeExercise, makeLab, parseLab, parseLabText, serializeLab, type Lab, type LabCore } from '../src/lab/lab';
 import { CURRENT, LabLibrary, LEGACY_AUTOSAVE, memoryStore } from '../src/lab/library';
 import { decodeLab, encodeLab, labCodeFromHash, shareLink } from '../src/lab/share';
-import { applyTheme, loadTheme, saveTheme, THEME_KEY } from '../src/lab/theme';
+import { applyPalette, applyTheme, loadPalette, loadTheme, PALETTE_KEY, savePalette, saveTheme, THEME_KEY } from '../src/lab/theme';
 import { buildStaticTables } from '../src/engine/static';
 import { converge } from '../src/engine/simulation';
 
@@ -184,5 +184,19 @@ describe('canvas notes and theme', () => {
     expect(attrs['data-theme']).toBe('dark');
     applyTheme(root, 'system');
     expect(attrs['data-theme']).toBeUndefined();
+  });
+
+  it('color is the default palette; monochrome is stored separately and sets data-palette', () => {
+    const store = memoryStore();
+    expect(loadPalette(store)).toBe('color');
+    savePalette(store, 'mono');
+    expect(loadPalette(store)).toBe('mono');
+    expect([...store.data.keys()]).toEqual([PALETTE_KEY]);
+    const attrs: Record<string, string> = {};
+    const root = { setAttribute: (k: string, v: string) => void (attrs[k] = v), removeAttribute: (k: string) => void delete attrs[k] };
+    applyPalette(root, 'mono');
+    expect(attrs['data-palette']).toBe('mono');
+    applyPalette(root, 'color');
+    expect(attrs['data-palette']).toBeUndefined();
   });
 });

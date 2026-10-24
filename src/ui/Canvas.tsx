@@ -30,6 +30,8 @@ interface Props {
   routePath: DirLink[];
   sptPath: DirLink[];
   focus: string[];
+  /** Color of the dashed ring around the devices in the current step. */
+  focusColor?: string;
   showAddresses: boolean;
   showGrid: boolean;
   view: View;
@@ -108,12 +110,12 @@ function tokenShape(style: Anim['style'], label: string | undefined, ttl: number
     const sw = sub ? sub.length * 6.4 + 12 : 0;
     return (
       <g className={`ospf-token ospf-${kind.toLowerCase()}`}>
-        <rect x={-w / 2} y={-17} width={w} height={34} rx={8} fill={solid ? 'var(--fg)' : 'var(--node)'} stroke="var(--fg)" strokeWidth={2.4} strokeDasharray={dashed ? '5 3' : undefined} />
+        <rect x={-w / 2} y={-17} width={w} height={34} rx={8} fill={solid ? 'var(--c-ospf)' : 'var(--node)'} stroke="var(--c-ospf)" strokeWidth={2.4} strokeDasharray={dashed ? '5 3' : undefined} />
         <text y={-5} textAnchor="middle" fontSize={8.5} fontWeight={700} letterSpacing={1} style={{ fill: solid ? 'var(--bg)' : 'var(--muted)' }}>OSPF</text>
-        <text y={11} textAnchor="middle" fontSize={14} fontWeight={800} style={{ fill: solid ? 'var(--bg)' : 'var(--fg)' }}>{kind}{kind === 'LSAck' ? ' ✓' : ''}</text>
+        <text y={11} textAnchor="middle" fontSize={14} fontWeight={800} style={{ fill: solid ? 'var(--bg)' : 'var(--c-ospf)' }}>{kind}{kind === 'LSAck' ? ' ✓' : ''}</text>
         {sub && (
           <g transform="translate(0,29)">
-            <rect x={-sw / 2} y={-9} width={sw} height={18} rx={9} fill="var(--bg)" stroke="var(--border)" />
+            <rect x={-sw / 2} y={-9} width={sw} height={18} rx={9} fill="var(--bg)" stroke="var(--c-ospf)" strokeOpacity={0.4} />
             <text y={4} textAnchor="middle" fontSize={11} fontWeight={600} style={{ fill: 'var(--fg)' }}>{sub}</text>
           </g>
         )}
@@ -126,10 +128,10 @@ function tokenShape(style: Anim['style'], label: string | undefined, ttl: number
     const w = text.length * 7.6 + 14;
     return (
       <g>
-        <rect x={-19} y={-12} width={38} height={24} rx={3} fill={isArp ? 'var(--node)' : 'var(--fg)'} stroke={isArp ? 'var(--fg)' : 'var(--bg)'} strokeWidth={2} strokeDasharray={isArp ? '4 3' : undefined} />
-        <path d="M-19 -12 L0 2 L19 -12" fill="none" stroke={isArp ? 'var(--fg)' : 'var(--bg)'} strokeWidth={1.6} />
+        <rect x={-19} y={-12} width={38} height={24} rx={3} fill={isArp ? 'var(--node)' : 'var(--c-data)'} stroke={isArp ? 'var(--c-arp)' : 'var(--bg)'} strokeWidth={2} strokeDasharray={isArp ? '4 3' : undefined} />
+        <path d="M-19 -12 L0 2 L19 -12" fill="none" stroke={isArp ? 'var(--c-arp)' : 'var(--bg)'} strokeWidth={1.6} />
         <g transform="translate(0,-31)">
-          <rect x={-w / 2} y={-11} width={w} height={22} rx={11} fill="var(--node)" stroke="var(--fg)" strokeWidth={1.6} />
+          <rect x={-w / 2} y={-11} width={w} height={22} rx={11} fill="var(--node)" stroke={isArp ? 'var(--c-arp)' : 'var(--c-data)'} strokeWidth={1.6} />
           <text y={5} textAnchor="middle" fontSize={13} fontWeight={800} style={{ fill: 'var(--fg)' }}>{text}</text>
         </g>
       </g>
@@ -138,22 +140,22 @@ function tokenShape(style: Anim['style'], label: string | undefined, ttl: number
   if (style === 'dv')
     return (
       <g>
-        <rect x={-15} y={-15} width={30} height={30} rx={4} fill="var(--node)" stroke="var(--fg)" strokeWidth={2.5} />
-        <text y={4} textAnchor="middle" fontSize={11} fontWeight={800} style={{ fill: 'var(--fg)' }}>{label ?? 'DV'}</text>
+        <rect x={-15} y={-15} width={30} height={30} rx={4} fill="var(--node)" stroke="var(--c-dv)" strokeWidth={2.5} />
+        <text y={4} textAnchor="middle" fontSize={11} fontWeight={800} style={{ fill: 'var(--c-dv)' }}>{label ?? 'DV'}</text>
       </g>
     );
   if (style === 'lsa')
     return (
       <g>
-        <rect x={-13} y={-13} width={26} height={26} transform="rotate(45)" fill="var(--mid)" stroke="var(--fg)" strokeWidth={2} />
+        <rect x={-13} y={-13} width={26} height={26} transform="rotate(45)" fill="var(--c-ospf)" stroke="var(--bg)" strokeWidth={2} />
         <text y={4} textAnchor="middle" fontSize={9} fontWeight={800} style={{ fill: 'var(--bg)' }}>LSA</text>
         <text y={-24} textAnchor="middle" fontSize={11} fontWeight={700} stroke="var(--bg)" strokeWidth={3} paintOrder="stroke" style={{ fill: 'var(--fg)' }}>{label}</text>
       </g>
     );
   return (
     <g>
-      <circle r={11} fill="var(--node)" stroke="var(--fg)" strokeWidth={2.5} />
-      <text y={4} textAnchor="middle" fontSize={10} fontWeight={800} style={{ fill: 'var(--fg)' }}>H</text>
+      <circle r={11} fill="var(--node)" stroke="var(--c-ospf)" strokeWidth={2.5} />
+      <text y={4} textAnchor="middle" fontSize={10} fontWeight={800} style={{ fill: 'var(--c-ospf)' }}>H</text>
     </g>
   );
 }
@@ -384,7 +386,7 @@ export function Canvas(p: Props) {
     const pad = 32;
     return (
       <line key={`${kind}-${dl.linkId}-${dl.from}-${dl.to}`} x1={a.x + ux * pad} y1={a.y + uy * pad} x2={b.x - ux * (pad + 4)} y2={b.y - uy * (pad + 4)}
-        stroke="var(--fg)" strokeWidth={kind === 'route' ? 8 : 6} strokeOpacity={kind === 'route' ? 0.35 : 0.22}
+        stroke={kind === 'route' ? 'var(--c-data)' : 'var(--c-ospf)'} strokeWidth={kind === 'route' ? 8 : 6} strokeOpacity={kind === 'route' ? 0.4 : 0.45}
         strokeDasharray={kind === 'spt' ? '2 7' : undefined} strokeLinecap="round" markerEnd={`url(#arrow-${kind})`} />
     );
   };
@@ -407,10 +409,10 @@ export function Canvas(p: Props) {
     >
       <defs>
         <marker id="arrow-route" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
-          <path d="M0 0 L10 5 L0 10 z" fill="var(--fg)" fillOpacity="0.7" />
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--c-data)" fillOpacity="0.8" />
         </marker>
         <marker id="arrow-spt" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3.6" markerHeight="3.6" orient="auto-start-reverse">
-          <path d="M0 0 L10 5 L0 10 z" fill="var(--fg)" fillOpacity="0.5" />
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--c-ospf)" fillOpacity="0.75" />
         </marker>
         <marker id="arrow-note" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)" />
@@ -512,7 +514,7 @@ export function Canvas(p: Props) {
               aria-label={`${label} ${d.name}${sel ? ', selected' : ''}`}
               onPointerDown={(e) => onDevDown(e, d.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); p.onDevice(d.id); } }}>
-              {(focus || pending) && <circle r={38} fill="none" stroke="var(--fg)" strokeWidth={2.5} strokeDasharray="6 5" className={p.reducedMotion ? '' : 'pulse'} />}
+              {(focus || pending) && <circle r={38} fill="none" stroke={pending ? 'var(--fg)' : p.focusColor ?? 'var(--fg)'} strokeWidth={2.5} strokeDasharray="6 5" className={p.reducedMotion ? '' : 'pulse'} />}
               {sel && <circle r={36} fill="var(--sel-halo)" stroke="none" />}
               {devShape(d, sel)}
               <text y={d.kind === 'router' ? 44 : d.kind === 'switch' ? 34 : 38} textAnchor="middle" fontSize={15} fontWeight={700} stroke="var(--bg)" strokeWidth={4} paintOrder="stroke">{d.name}</text>

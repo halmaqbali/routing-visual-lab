@@ -50,12 +50,13 @@ describe('link state simulation', () => {
     const { state } = converge(fiveRouter(), 'ls', opts());
     for (const r of ['r1', 'r2', 'r3', 'r4', 'r5']) expect(Object.keys(state.ls!.routers[r].lsdb).sort()).toEqual(['r1', 'r2', 'r3', 'r4', 'r5']);
   });
-  it('separates the stages in order: hello, describe, originate, flood, SPF, install', () => {
+  it('separates the stages in order: describe, originate, hello, adjacency, flood, SPF, install', () => {
     const kinds = createTimeline(threeRouter(), 'ls', opts()).map((f) => f.ev.kind);
     const first = (k: string) => kinds.indexOf(k);
-    expect(first('ls-hello')).toBeLessThan(first('ls-describe'));
     expect(first('ls-describe')).toBeLessThan(first('ls-originate'));
-    expect(first('ls-originate')).toBeLessThan(first('ls-flood'));
+    expect(first('ls-originate')).toBeLessThan(first('ls-hello'));
+    expect(first('ls-hello')).toBeLessThan(first('ls-adj'));
+    expect(first('ls-adj')).toBeLessThan(first('ls-flood'));
     expect(first('ls-flood')).toBeLessThan(first('spf-start'));
     expect(first('spf-step')).toBeLessThan(first('ls-install'));
     expect(kinds.includes('ls-dup')).toBe(false); // line topology: no duplicates
@@ -71,7 +72,7 @@ describe('link state simulation', () => {
     const { topo, id } = setLink(fiveRouter(), 'r4', 'r5', { up: false });
     const after = applyLinkChange(frames, frames.length - 1, topo, [id], 'R4–R5 disabled');
     const s = after.at(-1)!.state;
-    expect(s.ls!.routers.r1.lsdb.r4.seq).toBe(2);
+    expect(s.ls!.routers.r1.lsdb.r4.seq).toBe(3); // #1 at start-up, #2 once FULL, #3 after the failure
     expect(route(s.tables, 'r1', '192.168.3.0/24')).toMatchObject({ metric: 6, nextHop: '10.0.12.2' }) // R1-R2-R5-R3 = 2+3+1;
     const newKinds = after.slice(frames.length).map((f) => f.ev.kind);
     expect(newKinds).toContain('ls-detect');

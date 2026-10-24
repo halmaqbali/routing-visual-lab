@@ -5,7 +5,7 @@ import type { PacketView } from './packets';
 
 export type EventCategory = 'config' | 'control' | 'lsa' | 'spf' | 'data' | 'info';
 
-export type AnimStyle = 'data' | 'dv' | 'lsa' | 'hello';
+export type AnimStyle = 'data' | 'dv' | 'lsa' | 'hello' | 'ospf';
 
 export interface Anim {
   from: string;
@@ -13,13 +13,15 @@ export interface Anim {
   linkId: string;
   style: AnimStyle;
   label?: string;
+  /** Small second line under the label (e.g. which LSA an OSPF LSU carries). */
+  sub?: string;
   drop?: boolean;
   /** TTL carried by a data packet on this hop. */
   ttl?: number;
   /** Devices to travel through (e.g. R1 → SW1 → R2); defaults to a straight from → to line. */
   path?: string[];
   /** Extra simultaneous copies (switch flooding). */
-  copies?: { from: string; to: string }[];
+  copies?: { from: string; to: string; path?: string[] }[];
 }
 
 // ---------------------------------------------------------------- distance vector

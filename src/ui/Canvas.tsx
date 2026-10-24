@@ -98,7 +98,28 @@ function devShape(d: Device, sel: boolean): ReactNode {
   );
 }
 
-function tokenShape(style: Anim['style'], label: string | undefined, ttl: number | undefined): ReactNode {
+function tokenShape(style: Anim['style'], label: string | undefined, ttl: number | undefined, sub?: string): ReactNode {
+  if (style === 'ospf') {
+    // OSPF message: a labelled envelope so every packet type (Hello, DBD, LSR, LSU, LSAck) is readable on the canvas.
+    const kind = label ?? 'OSPF';
+    const w = Math.max(64, kind.length * 11 + 26);
+    const solid = kind === 'LSU';
+    const dashed = kind === 'DBD' || kind === 'LSR';
+    const sw = sub ? sub.length * 6.4 + 12 : 0;
+    return (
+      <g className={`ospf-token ospf-${kind.toLowerCase()}`}>
+        <rect x={-w / 2} y={-17} width={w} height={34} rx={8} fill={solid ? 'var(--fg)' : 'var(--node)'} stroke="var(--fg)" strokeWidth={2.4} strokeDasharray={dashed ? '5 3' : undefined} />
+        <text y={-5} textAnchor="middle" fontSize={8.5} fontWeight={700} letterSpacing={1} style={{ fill: solid ? 'var(--bg)' : 'var(--muted)' }}>OSPF</text>
+        <text y={11} textAnchor="middle" fontSize={14} fontWeight={800} style={{ fill: solid ? 'var(--bg)' : 'var(--fg)' }}>{kind}{kind === 'LSAck' ? ' ✓' : ''}</text>
+        {sub && (
+          <g transform="translate(0,29)">
+            <rect x={-sw / 2} y={-9} width={sw} height={18} rx={9} fill="var(--bg)" stroke="var(--border)" />
+            <text y={4} textAnchor="middle" fontSize={11} fontWeight={600} style={{ fill: 'var(--fg)' }}>{sub}</text>
+          </g>
+        )}
+      </g>
+    );
+  }
   if (style === 'data') {
     const isArp = label === 'ARP';
     const text = `${label ?? ''}${ttl !== undefined ? ` · TTL ${ttl}` : ''}`;
@@ -331,7 +352,7 @@ export function Canvas(p: Props) {
   if (anim) {
     const end = anim.drop && anim.from !== anim.to ? 0.5 : 1;
     const k = Math.min(progress, 1) * end;
-    const routes = [anim.path && anim.path.length > 1 ? anim.path : [anim.from, anim.to], ...(anim.copies ?? []).map((c) => [c.from, c.to])];
+    const routes = [anim.path && anim.path.length > 1 ? anim.path : [anim.from, anim.to], ...(anim.copies ?? []).map((c) => (c.path && c.path.length > 1 ? c.path : [c.from, c.to]))];
     const dropped = anim.drop && progress >= 1;
     tokens = routes.map((r, i) => {
       const pos = anim.from === anim.to ? { ...xy(anim.from), y: xy(anim.from).y - 34 } : along(r, k);
@@ -339,7 +360,7 @@ export function Canvas(p: Props) {
         <g key={i} transform={`translate(${pos.x},${pos.y})`} className="packet-token" role="button" tabIndex={-1}
           aria-label="Inspect this packet" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); p.onPacketClick(); }}>
           <title>Click to inspect this packet</title>
-          {anim.from !== anim.to && tokenShape(anim.style, anim.label, i === 0 ? anim.ttl : undefined)}
+          {anim.from !== anim.to && tokenShape(anim.style, anim.label, i === 0 ? anim.ttl : undefined, anim.sub)}
           {dropped && i === 0 && (
             <g>
               <polygon points="-10,-24 10,-24 24,-10 24,10 10,24 -10,24 -24,10 -24,-10" fill="var(--fail)" stroke="var(--bg)" strokeWidth={2} />

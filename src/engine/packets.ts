@@ -14,7 +14,7 @@ export function macFn(topo: Topology) {
   };
 }
 
-export type Proto = 'ICMP' | 'ARP' | 'RIPv2' | 'DV (teaching)' | 'OSPF Hello' | 'OSPF DBD' | 'OSPF LSR' | 'OSPF LSU';
+export type Proto = 'ICMP' | 'ARP' | 'RIPv2' | 'DV (teaching)' | 'OSPF Hello' | 'OSPF DBD' | 'OSPF LSR' | 'OSPF LSU' | 'OSPF LSAck';
 
 export interface Field {
   name: string;
@@ -235,24 +235,24 @@ export function ospfHelloView(topo: Topology, router: string, ifaceId: string, s
 }
 
 /** Database Description (DBD), Link State Request (LSR): adjacency-forming messages between two routers. */
-export function ospfMsgView(topo: Topology, from: string, to: string, key: string, type: 'DBD' | 'LSR', items: string[], info: string, notes: string[], macOfIface: (dev: string, iface: string) => string): PacketView {
+export function ospfMsgView(topo: Topology, from: string, to: string, key: string, type: 'DBD' | 'LSR' | 'LSAck', items: string[], info: string, notes: string[], macOfIface: (dev: string, iface: string) => string): PacketView {
   const nb = adjacency(topo, from, to, key);
   const srcIp = nb?.localIface.ip ?? '';
   const dstIp = nb?.remoteIface.ip ?? '';
   const srcMac = nb ? macOfIface(from, nb.localIface.id) : '';
   const dstMac = nb ? macOfIface(to, nb.remoteIface.id) : '';
   return {
-    protocol: type === 'DBD' ? 'OSPF DBD' : 'OSPF LSR', info, origin: from, target: to, at: from, next: to,
+    protocol: `OSPF ${type}`, info, origin: from, target: to, at: from, next: to,
     outIface: nb?.localIface.name, srcMac, dstMac, srcIp, dstIp, ttl: 1,
-    sizeNote: type === 'DBD' ? 'Approximate: 24 (OSPF header) + 8 + 20 per LSA header.' : 'Approximate: 24 (OSPF header) + 12 per LSA requested.',
+    sizeNote: type === 'LSR' ? 'Approximate: 24 (OSPF header) + 12 per LSA requested.' : type === 'DBD' ? 'Approximate: 24 (OSPF header) + 8 + 20 per LSA header.' : 'Approximate: 24 (OSPF header) + 20 per LSA header.',
     layers: [
       ETH(dstMac, srcMac, '0x0800 (IPv4)'),
       IPV4(srcIp, dstIp, 1, '89 (OSPF)', 64),
-      { name: type === 'DBD' ? 'OSPF Database Description' : 'OSPF Link State Request', layer: 7, fields: [
-        { name: 'Version / Type', value: type === 'DBD' ? '2 / 2 (Database Description)' : '2 / 3 (Link State Request)' },
+      { name: { DBD: 'OSPF Database Description', LSR: 'OSPF Link State Request', LSAck: 'OSPF Link State Acknowledgment' }[type], layer: 7, fields: [
+        { name: 'Version / Type', value: { DBD: '2 / 2 (Database Description)', LSR: '2 / 3 (Link State Request)', LSAck: '2 / 5 (Link State Acknowledgment)' }[type] },
         { name: 'Router ID', value: routerId(topo, from) },
-        ...(items.length ? items.map((x) => ({ name: type === 'DBD' ? 'LSA header' : 'Requested LSA', value: x })) : [{ name: type === 'DBD' ? 'LSA headers' : 'Requested LSAs', value: 'none' }]),
-        { name: 'DD sequence / flags', value: 'not modelled', simulated: true },
+        ...(items.length ? items.map((x) => ({ name: type === 'LSR' ? 'Requested LSA' : type === 'DBD' ? 'LSA header' : 'Acknowledged LSA', value: x })) : [{ name: type === 'LSR' ? 'Requested LSAs' : 'LSA headers', value: 'none' }]),
+        ...(type === 'DBD' ? [{ name: 'DD sequence / flags', value: 'not modelled', simulated: true }] : []),
       ] },
     ],
     notes,

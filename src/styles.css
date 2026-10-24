@@ -574,6 +574,15 @@ fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 
 .zoom-ctl button { width: 40px; height: 40px; border: 0; background: transparent; color: var(--fg); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .zoom-ctl button:hover { background: var(--panel-2); }
 .zoom-ctl .zoom-pct { font-size: 11px; font-weight: 600; color: var(--muted); padding: 2px 0; min-width: 0; }
+.ospf-legend { position: absolute; left: 14px; bottom: 14px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: calc(100% - 90px); background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 6px 8px; font-size: 12px; }
+.ospf-legend-title { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-right: 2px; }
+.ospf-legend-item { display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 8px; border: 1.5px solid var(--border); border-radius: 7px; color: var(--muted); }
+.ospf-legend-item b { color: var(--fg); font-weight: 800; }
+.ospf-legend-item.on { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+.ospf-legend-item.on b { color: var(--bg); }
+.mobile-body .ospf-legend { left: 8px; bottom: 8px; max-width: calc(100% - 150px); padding: 4px 6px; gap: 4px; font-size: 11px; }
+.mobile-body .ospf-legend-title { display: none; }
+.mobile-body .ospf-legend-item { padding: 2px 5px; }
 .steps-drawer { position: absolute; top: 64px; right: 14px; bottom: 14px; width: min(380px, calc(100% - 28px)); z-index: 8; display: flex; }
 .steps-drawer > section { flex: 1; display: flex; flex-direction: column; box-shadow: 0 16px 40px rgba(0,0,0,0.18); }
 .steps-drawer .timeline { flex: 1; max-height: none; }

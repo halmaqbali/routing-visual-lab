@@ -33,7 +33,8 @@ describe('OSPF neighbour states', () => {
     expect(idx(/hears .*: Init/)).toBeLessThan(idx(/: 2-Way/));
     expect(idx(/: 2-Way/)).toBeLessThan(idx(/ExStart → Exchange/));
     expect(idx(/ExStart → Exchange/)).toBeLessThan(idx(/Loading → FULL/));
-    expect(idx(/Loading → FULL/)).toBeLessThan(idx(/originates Router-LSA/));
+    expect(idx(/Link State Request/)).toBeLessThan(idx(/Loading → FULL/));
+    expect(idx(/Loading → FULL/)).toBeLessThan(idx(/originates Router-LSA #2/));
     const last = frames.at(-1)!.state;
     for (const r of ['r1', 'r2', 'r3']) expect(last.ls!.routers[r].neighbors.every((n) => n.state === 'Full')).toBe(true);
   });
@@ -117,6 +118,14 @@ describe('OSPF on a switched LAN', () => {
     const kinds = f3.slice(f2.length).map((f) => f.ev.title);
     expect(kinds.some((t) => /ExStart → Exchange/.test(t))).toBe(true);
     expect(kinds.some((t) => /Loading → FULL/.test(t))).toBe(true);
+    const lsr = kinds.findIndex((t) => /Link State Request \(LSR\)/.test(t));
+    const lsu = kinds.findIndex((t) => /Link State Update \(LSU\)/.test(t));
+    const ack = kinds.findIndex((t) => /Link State Acknowledgment \(LSAck\)/.test(t));
+    expect(lsr).toBeGreaterThanOrEqual(0);
+    expect(lsr).toBeLessThan(lsu);
+    expect(lsu).toBeLessThan(ack);
+    const msgs = new Set(f3.map((f) => (f.ev.anim?.style === 'ospf' ? f.ev.anim.label : null)).filter(Boolean));
+    for (const m of ['Hello', 'DBD', 'LSR', 'LSU', 'LSAck']) expect(msgs.has(m)).toBe(true);
     expect(route(f3.at(-1)!.state.tables, 'r1', '192.168.3.0/24')).toMatchObject({ metric: 2, nextHop: '10.0.12.2' });
   });
 });

@@ -280,6 +280,9 @@ export function lsInit(base: SimState): Frame[] {
   }
   for (const r of routers(s.topo)) {
     const ifaces = [...new Set(routerNeighbors(s.topo, r.id).map((n) => n.localIface.id))];
+    // Like OSPF, a router originates its own Router-LSA as soon as its interfaces come up, so the DBD exchange
+    // that follows has something to list and students see LSR → LSU → LSAck.
+    if (ifaces.length) push(s, { t: 0, type: 'originate', router: r.id, reason: 'its interfaces came up (no neighbours yet, so it lists only its own networks)' });
     for (const i of ifaces) {
       ifst(s, r.id, i);
       push(s, { t: 0, type: 'hello', router: r.id, iface: i });
@@ -293,6 +296,8 @@ export function lsInit(base: SimState): Frame[] {
 }
 
 // ---------------------------------------------------------------- events
+
+const lsaOwner = (s: SimState, l: Lsa) => (l.kind === 'network' ? `LAN ${l.net ? cidr(l.net.network, l.net.prefix) : ''}` : nm(s, l.origin));
 
 function handle(s: SimState, prev: SimState, p: NonNullable<ReturnType<typeof popNext>>): Frame[] {
   if (p.type === 'hello') {
@@ -308,7 +313,7 @@ function handle(s: SimState, prev: SimState, p: NonNullable<ReturnType<typeof po
     return [frame(s, {
       kind: 'ls-hello', category: 'lsa', title: `${nm(s, r)} sends a Hello on ${ifn}`, routers: [r],
       explain: `${nm(s, r)} (router ID ${routerId(s.topo, r)}) sends an OSPF Hello out of ${ifn} to 224.0.0.5. It lists the neighbours it has already heard on this link: ${seen.length ? seen.map((x) => nm(s, x)).join(', ') : 'none yet'}.${info.multiAccess ? ' This is a switched LAN, so every router on it receives the Hello.' : ''}`,
-      anim: { from: r, to: nbs[0].router, linkId: nbs[0].key, style: 'hello', label: 'Hello', path: nbs[0].path, copies: nbs.slice(1).map((n) => ({ from: r, to: n.router })) },
+      anim: { from: r, to: nbs[0].router, linkId: nbs[0].key, style: 'ospf', label: 'Hello', sub: 'to 224.0.0.5', path: nbs[0].path, copies: nbs.slice(1).map((n) => ({ from: r, to: n.router, path: n.path })) },
       packet: ospfHelloView(s.topo, r, p.iface, seen, info.dr, info.bdr, macFn(s.topo), nbs[0].router),
     })];
   }
@@ -415,39 +420,68 @@ function handle(s: SimState, prev: SimState, p: NonNullable<ReturnType<typeof po
       return [frame(s, {
         kind: 'ls-adj', category: 'lsa', title: `${an} ↔ ${bn}: ExStart → Exchange (DBD)`, routers: [p.a, p.b],
         explain: `To become fully adjacent, ${an} and ${bn} first agree who leads (ExStart: the higher router ID, ${nm(s, master)}, is master). Then they swap Database Description (DBD) packets that list only the HEADERS of the LSAs each one has. ${an} has ${hdrs(p.a).join(', ') || 'nothing yet'}; ${bn} has ${hdrs(p.b).join(', ') || 'nothing yet'}.`,
-        anim: { from: p.a, to: p.b, linkId: p.key, style: 'lsa', label: 'DBD', path },
+        anim: { from: p.a, to: p.b, linkId: p.key, style: 'ospf', label: 'DBD', sub: `${hdrs(p.a).length} LSA header${hdrs(p.a).length === 1 ? '' : 's'}`, path },
         packet: ospfMsgView(s.topo, master, master === p.a ? p.b : p.a, p.key, 'DBD', hdrs(master), `Database Description: ${hdrs(master).length} LSA header(s)`, ['A DBD lists LSA headers (type, origin, sequence number), not the full LSAs. Each router compares the list with its own database to see what it is missing.'], macFn(s.topo)),
       })];
     }
-    // Loading: request what is missing (LSR), receive it (LSU), acknowledge (LSAck), then FULL.
+    // Loading: each side requests what is missing (LSR), receives it (LSU) and acknowledges it (LSAck); then FULL.
+    // Each message is its own step so students see every OSPF packet type.
     const missing = (have: LsRouterState, other: LsRouterState) => Object.values(other.lsdb).filter((l) => { const k = lsaKey(l); return !have.lsdb[k] || have.lsdb[k].seq < l.seq; });
-    const sa = lsr(s, p.a);
-    const sb = lsr(s, p.b);
-    const forA = missing(sa, sb);
-    const forB = missing(sb, sa);
-    for (const l of forA) sa.lsdb[lsaKey(l)] = l;
-    for (const l of forB) sb.lsdb[lsaKey(l)] = l;
-    if (forA.length) scheduleSpf(s, p.a);
-    if (forB.length) scheduleSpf(s, p.b);
-    A.state = 'Full';
-    B.state = 'Full';
-    queueOriginate(s, p.a, `it became FULL with ${bn}`);
-    queueOriginate(s, p.b, `it became FULL with ${an}`);
-    for (const [r, n] of [[p.a, A], [p.b, B]] as const) {
-      const info = lsr(s, r).ifaces![n.localIface];
-      if (info?.multiAccess && info.dr === r) queueNetLsa(s, r, n.localIface);
-    }
+    const forA = missing(lsr(s, p.a), lsr(s, p.b));
+    const forB = missing(lsr(s, p.b), lsr(s, p.a));
     const list = (ls: Lsa[]) => ls.map((l) => lsaName(s, l)).join(', ');
-    const asker = forA.length ? p.a : p.b;
-    const asked = forA.length ? forA : forB;
-    return [frame(s, {
+    const out: Frame[] = [];
+    let cur = s;
+    const pathFrom = (r: string) => (r === p.a ? path : adjPath(s.topo, p.b, p.key));
+    for (const [asker, giver, asked] of [[p.a, p.b, forA], [p.b, p.a, forB]] as const) {
+      if (!asked.length) continue;
+      const askN = nm(s, asker);
+      const giveN = nm(s, giver);
+      const names = asked.map((l) => lsaName(s, l));
+      if (out.length) cur = cloneState(cur);
+      out.push(frame(cur, {
+        kind: 'ls-adj', category: 'lsa', title: `${askN} → ${giveN}: Link State Request (LSR)`, routers: [asker, giver],
+        explain: `Loading: the DBD exchange showed ${askN} is missing ${asked.length === 1 ? 'an LSA' : `${asked.length} LSAs`} that ${giveN} has (${list(asked)}). ${askN} asks for the full LSA${asked.length > 1 ? 's' : ''} with a Link State Request (LSR).`,
+        anim: { from: asker, to: giver, linkId: p.key, style: 'ospf', label: 'LSR', sub: `asks for ${asked.length} LSA${asked.length > 1 ? 's' : ''}`, path: pathFrom(asker) },
+        packet: ospfMsgView(s.topo, asker, giver, p.key, 'LSR', names, `Link State Request: ${asked.length} LSA(s)`, ['An LSR asks for the full LSAs that the DBD exchange showed are missing or older. The reply is a Link State Update (LSU).'], macFn(s.topo)),
+      }));
+      cur = cloneState(cur);
+      const st = lsr(cur, asker);
+      for (const l of asked) st.lsdb[lsaKey(l)] = l;
+      out.push(frame(cur, {
+        kind: 'ls-adj', category: 'lsa', title: `${giveN} → ${askN}: Link State Update (LSU)`, routers: [giver, asker],
+        explain: `${giveN} answers with a Link State Update (LSU) carrying the complete LSA${asked.length > 1 ? 's' : ''}: ${list(asked)}. ${askN} stores ${asked.length > 1 ? 'them' : 'it'} in its link-state database (now ${Object.keys(st.lsdb).length} LSAs).`,
+        detail: asked.map((l) => lsaText(cur, l)),
+        anim: { from: giver, to: asker, linkId: p.key, style: 'ospf', label: 'LSU', sub: asked.length === 1 ? `${lsaOwner(cur, asked[0])} LSA` : `${asked.length} LSAs`, path: pathFrom(giver) },
+        lsa: { lsa: asked[0], installed: true },
+        packet: lsuView(s.topo, giver, asker, p.key, asked[0], macFn(s.topo)),
+      }));
+      cur = cloneState(cur);
+      out.push(frame(cur, {
+        kind: 'ls-adj', category: 'lsa', title: `${askN} → ${giveN}: Link State Acknowledgment (LSAck)`, routers: [asker, giver],
+        explain: `${askN} confirms it received the LSU with a Link State Acknowledgment (LSAck). OSPF acknowledges every LSA it receives; without an LSAck the sender would send the LSU again.`,
+        anim: { from: asker, to: giver, linkId: p.key, style: 'ospf', label: 'LSAck', sub: `${asked.length} LSA${asked.length > 1 ? 's' : ''} received`, path: pathFrom(asker) },
+        packet: ospfMsgView(s.topo, asker, giver, p.key, 'LSAck', names, `Link State Acknowledgment: ${asked.length} LSA(s)`, ['An LSAck lists the headers of the LSAs it confirms. It makes OSPF flooding reliable.'], macFn(s.topo)),
+      }));
+    }
+    if (out.length) cur = cloneState(cur);
+    if (forA.length) scheduleSpf(cur, p.a);
+    if (forB.length) scheduleSpf(cur, p.b);
+    const A2 = nbr(cur, p.a, p.key)!;
+    const B2 = nbr(cur, p.b, p.key)!;
+    A2.state = 'Full';
+    B2.state = 'Full';
+    queueOriginate(cur, p.a, `it became FULL with ${bn}`);
+    queueOriginate(cur, p.b, `it became FULL with ${an}`);
+    for (const [r, n] of [[p.a, A2], [p.b, B2]] as const) {
+      const info = lsr(cur, r).ifaces![n.localIface];
+      if (info?.multiAccess && info.dr === r) queueNetLsa(cur, r, n.localIface);
+    }
+    out.push(frame(cur, {
       kind: 'ls-adj', category: 'lsa', title: `${an} ↔ ${bn}: Loading → FULL`, routers: [p.a, p.b],
-      explain: `${forA.length || forB.length
-        ? `Loading: ${forA.length ? `${an} sends a Link State Request (LSR) for ${list(forA)}; ${bn} answers with a Link State Update (LSU).` : ''} ${forB.length ? `${bn} requests ${list(forB)} from ${an} the same way.` : ''} Each LSU is acknowledged with an LSAck.`
-        : 'Their databases already match, so nothing has to be requested.'} The two routers are now FULL: fully adjacent with synchronised databases. Only FULL neighbours appear in Router-LSAs and are used for flooding.`,
-      anim: { from: asker === p.a ? p.b : p.a, to: asker, linkId: p.key, style: 'lsa', label: asked.length ? 'LSU' : 'Full', path: asker === p.a ? adjPath(s.topo, p.b, p.key) : path },
-      packet: ospfMsgView(s.topo, asker, asker === p.a ? p.b : p.a, p.key, 'LSR', asked.map((l) => lsaName(s, l)), asked.length ? `Link State Request: ${asked.length} LSA(s)` : 'Link State Request: nothing missing', ['An LSR asks for the full LSAs that the DBD exchange showed are missing or older. The reply is a Link State Update (LSU).'], macFn(s.topo)),
-    })];
+      explain: `${forA.length || forB.length ? 'Every requested LSA has arrived and been acknowledged.' : 'Their databases already match, so nothing has to be requested (no LSR or LSU needed).'} ${an} and ${bn} are now FULL: fully adjacent with synchronised databases. Only FULL neighbours appear in Router-LSAs and are used for flooding.`,
+    }));
+    return out;
   }
 
   if (p.type === 'dead') {
@@ -531,7 +565,7 @@ function handle(s: SimState, prev: SimState, p: NonNullable<ReturnType<typeof po
       return [frame(s, {
         kind: 'ls-lost', category: 'lsa', title: `LSA ${fromN} → ${toN} lost`, routers: [p.to],
         explain: `The link is down, so ${toN} never receives this LSA.`,
-        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', drop: true, label: 'LSA', path: adjPath(prev.topo, p.from, p.linkId) },
+        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'ospf', drop: true, label: 'LSU', sub: 'lost', path: adjPath(prev.topo, p.from, p.linkId) },
       })];
     }
     const st = lsr(s, p.to);
@@ -548,7 +582,7 @@ function handle(s: SimState, prev: SimState, p: NonNullable<ReturnType<typeof po
         kind: 'ls-flood', category: 'lsa', title: `${toN} receives the ${what} #${p.lsa.seq}`, routers: [p.to],
         explain: `${toN} gets the ${what} from ${fromN}. It is ${have ? `newer than the stored #${have.seq}` : 'new'}, so ${toN} stores it (its database now holds ${total} LSA${total > 1 ? 's' : ''}), acknowledges it and floods an unchanged copy to its other FULL neighbours. The LSA is NOT modified: every router gets the same original description.`,
         detail: [lsaText(s, p.lsa)],
-        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', label: `LSA ${owner}`, path: adjPath(s.topo, p.from, p.linkId) },
+        anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'ospf', label: 'LSU', sub: `${owner} LSA #${p.lsa.seq}`, path: adjPath(s.topo, p.from, p.linkId) },
         lsa: { lsa: p.lsa, installed: true },
         packet: lsuView(s.topo, p.from, p.to, p.linkId, p.lsa, macFn(s.topo)),
       })];
@@ -556,7 +590,7 @@ function handle(s: SimState, prev: SimState, p: NonNullable<ReturnType<typeof po
     return [frame(s, {
       kind: 'ls-dup', category: 'lsa', title: `${toN} discards a duplicate ${what}`, routers: [p.to],
       explain: `${toN} already has the ${what} #${have.seq}, so the copy from ${fromN} is not new. It is acknowledged but discarded and NOT flooded again — this is what stops flooding from going on forever.`,
-      anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'lsa', label: `LSA ${owner}`, path: adjPath(s.topo, p.from, p.linkId) },
+      anim: { from: p.from, to: p.to, linkId: p.linkId, style: 'ospf', label: 'LSU', sub: `${owner} LSA · duplicate`, path: adjPath(s.topo, p.from, p.linkId) },
       lsa: { lsa: p.lsa, installed: false },
       packet: lsuView(s.topo, p.from, p.to, p.linkId, p.lsa, macFn(s.topo)),
     })];

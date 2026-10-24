@@ -32,6 +32,7 @@ type DetailsTab = 'inspect' | 'packet' | 'scenario' | 'settings';
 type MobileTab = 'step' | 'device' | 'packet' | 'lesson' | 'steps' | 'settings';
 
 const simModeOf = (m: ViewMode): Mode => (m === 'compare' ? 'static' : m);
+const OSPF_MSGS: [string, string][] = [['Hello', 'find neighbours'], ['DBD', 'list LSA headers'], ['LSR', 'ask for LSAs'], ['LSU', 'carry LSAs'], ['LSAck', 'confirm receipt']];
 const startCursor = (m: ViewMode, f: Frame[]) => (simModeOf(m) === 'static' ? f.length - 1 : 0);
 
 /** Follow next hops from a router towards a network, for highlighting a selected route. */
@@ -802,6 +803,19 @@ export default function App() {
               : <button className="chip" onClick={startPresenting} title="Full-screen network for the classroom"><Icon name="present" size={15} /> Present</button>)}
           </div>
         </div>
+        {mode === 'ls' && (
+          <div className="ospf-legend" role="group" aria-label="OSPF message types">
+            <span className="ospf-legend-title">OSPF messages</span>
+            {OSPF_MSGS.map(([k, d]) => {
+              const on = ev.anim?.style === 'ospf' && ev.anim.label === k;
+              return (
+                <span key={k} className={`ospf-legend-item ${on ? 'on' : ''}`} aria-current={on ? 'step' : undefined} title={d}>
+                  <b>{k}</b>{wide && <span>{d}</span>}
+                </span>
+              );
+            })}
+          </div>
+        )}
         {toolHint && <div className="tool-hint" role="status">{toolHint}</div>}
         {notice && (
           <div className={`toast ${notice.kind}`} role="status">
